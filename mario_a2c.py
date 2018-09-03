@@ -182,9 +182,11 @@ class Environment(object):
             self.history[4, :, :] = self.next_obs
             self.rall += reward
 
-            reward = np.clip(reward, -1, 1)
+            r = np.clip(reward, -1, 1)
+            if reward == -15:
+                self.ter = True
 
-            sample.append([self.history[:4, :, :], action, reward, self.history[1:, :, :], self.ter])
+            sample.append([self.history[:4, :, :], action, r, self.history[1:, :, :], self.ter])
 
             self.history[:4, :, :] = self.history[1:, :, :]
 
