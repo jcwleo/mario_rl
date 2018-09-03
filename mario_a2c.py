@@ -54,7 +54,7 @@ def make_batch(sample, agent):
         discounted_return[t, 0] = running_add
 
     # For critic
-    target = r + DISCOUNT * d * next_value
+    target = r + DISCOUNT * (1 - d) * next_value
 
     # For Actor
     adv = discounted_return - value
@@ -177,16 +177,16 @@ class Environment(object):
             self.step += 1
             action = agent.get_action(self.history[:4, :, :])
             self.next_obs, reward, self.done, _ = self.env.step(action)
-            self.ter = self.done
             self.next_obs = Environment.pre_proc(self.next_obs)
             self.history[4, :, :] = self.next_obs
-            self.rall += reward
 
             r = np.clip(reward, -1, 1)
+            self.rall += r
             if reward == -15:
-                self.ter = True
+                self.done = True
+                r = -100
 
-            sample.append([self.history[:4, :, :], action, r, self.history[1:, :, :], self.ter])
+            sample.append([self.history[:4, :, :], action, r, self.history[1:, :, :], self.done])
 
             self.history[:4, :, :] = self.history[1:, :, :]
 

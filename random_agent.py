@@ -10,6 +10,8 @@ for step in range(5000):
     if done:
         state = env.reset()
     state, reward, done, info = env.step(env.action_space.sample())
+    if step % 100 == 0:
+        env.reset()
     if reward == -15 or done:
         print('die')
 
