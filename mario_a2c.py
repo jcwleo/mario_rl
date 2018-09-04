@@ -1,6 +1,7 @@
 import gym_super_mario_bros
 from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+import time
 
 import numpy as np
 
@@ -58,6 +59,7 @@ def make_batch(sample, agent):
 
     # For Actor
     adv = discounted_return - value
+    # adv = (adv - adv.mean()) / (adv.std() + 1e-5)
 
     return [s, target, y, adv]
 
@@ -97,9 +99,10 @@ class ActorAgent(object):
         state = torch.from_numpy(state).unsqueeze(0)
         state = state.float()
         policy, value = self.model(state)
-        m = Categorical(policy)
-        action = m.sample()
-        return action.item()
+        policy = policy.detach().numpy()
+        action = np.random.choice(np.arange(OUTPUT), p=policy[0])
+
+        return action
 
     # after some time interval update the target model to be same with model
     def update_actor_model(self, target):
@@ -112,7 +115,7 @@ class LearnerAgent(object):
         # self.model.cuda()
         self.output_size = OUTPUT
         self.input_size = INPUT
-        self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
+        self.optimizer = optim.RMSprop(self.model.parameters(), lr=LEARNING_RATE, eps=0.1, weight_decay=0.99)
 
     def train_model(self, s_batch, target_batch, y_batch, adv_batch):
         s_batch = torch.FloatTensor(s_batch)
@@ -138,7 +141,7 @@ class LearnerAgent(object):
         loss = actor_loss.mean() + 0.5 * critic_loss - 0.01 * entropy.mean()
         self.optimizer.zero_grad()
         loss.backward()
-
+        torch.nn.utils.clip_grad_norm(self.model.parameters(), 3)
         self.optimizer.step()
 
 
@@ -153,7 +156,7 @@ class Environment(object):
         self.episode = 0
         self.rall = 0
         self.history = np.zeros([5, 84, 84])
-        self.get_init_state(self.history, self.obs)
+        self.history = self.get_init_state(self.history, self.obs)
         self.recent_rlist = deque(maxlen=100)
         self.recent_rlist.append(0)
         self.ter = False
@@ -167,13 +170,13 @@ class Environment(object):
     def get_init_state(history, s):
         for i in range(4):
             history[i, :, :] = Environment.pre_proc(s)
+        return history
 
     def run(self, agent):
         sample = []
-        if self.env_idx == 0:
-            self.env.render()
-
         for _ in range(NUM_STEP):
+            if self.env_idx == 0:
+                self.env.render()
             self.step += 1
             action = agent.get_action(self.history[:4, :, :])
             self.next_obs, reward, self.done, _ = self.env.step(action)
@@ -181,6 +184,7 @@ class Environment(object):
             self.history[4, :, :] = self.next_obs
 
             r = np.clip(reward, -1, 1)
+
             self.rall += r
             if reward == -15:
                 self.done = True
@@ -199,7 +203,7 @@ class Environment(object):
 
                 self.obs = self.env.reset()
                 self.history = np.zeros([5, 84, 84])
-                self.get_init_state(self.history, self.obs)
+                self.history = self.get_init_state(self.history, self.obs)
                 self.done = False
                 self.step = 0
                 self.rall = 0
@@ -214,24 +218,33 @@ def runner(env, cond, memory, actor):
             memory.put(sample)
 
             # wait runner
+
             cond.wait()
 
 
 def learner(cond, memory, actor_agent, learner_agent):
     train_step = 0
+
     while True:
         if memory.full():
             train_step += 1
             s_batch, target_batch, y_batch, adv_batch = [], [], [], []
             # while memory.qsize() != 0:
             # if you use MacOS, use under condition.
-            while not memory.empty():
+            if NUM_ENV == 1:
                 batch = memory.get()
-
                 s_batch.extend(batch[0])
                 target_batch.extend(batch[1])
                 y_batch.extend(batch[2])
                 adv_batch.extend(batch[3])
+            else:
+                while not memory.empty():
+                    batch = memory.get()
+
+                    s_batch.extend(batch[0])
+                    target_batch.extend(batch[1])
+                    y_batch.extend(batch[2])
+                    adv_batch.extend(batch[3])
 
             # train
             learner_agent.train_model(s_batch, target_batch, y_batch, adv_batch)
@@ -260,36 +273,38 @@ def main():
         Environment(BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make('SuperMarioBros-v2'), SIMPLE_MOVEMENT), i)
         for i in range(num_envs)]
 
-    # Learner Process(only Learn)
     learn_proc = mp.Process(target=learner, args=(cond, memory, actor_agent, learner_agent))
 
     # Runner Process(just run, not learn)
     runners = []
     for idx, env in enumerate(envs):
+        np.random.seed(idx + 1000)
         run_proc = mp.Process(target=runner, args=(env, cond, memory, actor_agent))
-        runners.append(run_proc)
+        time.sleep(1)
         run_proc.start()
+        runners.append(run_proc)
 
     learn_proc.start()
 
     for proc in runners:
         proc.join()
 
+    # Learner Process(only Learn)
     learn_proc.join()
 
 
 if __name__ == '__main__':
-    torch.manual_seed(23)
     env = gym_super_mario_bros.make('SuperMarioBros-v2')
     env = BinarySpaceToDiscreteSpaceEnv(env, SIMPLE_MOVEMENT)
+    env.close()
     # Hyper parameter
     INPUT = env.observation_space.shape[0]
     OUTPUT = env.action_space.n
     DISCOUNT = 0.99
-    NUM_STEP = 10
-    NUM_ENV = 4
+    NUM_STEP = 5
+    NUM_ENV = 8
     EPSILON = 1e-5
     ALPHA = 0.99
-    LEARNING_RATE = 0.00025
+    LEARNING_RATE = 0.0007 * NUM_ENV
 
     main()
