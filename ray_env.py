@@ -11,19 +11,19 @@ class Environment(object):
         os.environ["MKL_NUM_THREADS"] = "1"
         self.env = gym.make(env_id)
 
-    def step(self,action):
-        # self.env.render()
+    def step(self, action):
+        self.env.render()
         return self.env.step(action)
 
     def reset(self):
         return self.env.reset()
 
+
 if __name__ == '__main__':
     env_id = 'Pong-v0'
-    num_env = 8
+    num_env = 2
     ray.init()
     envs = [Environment.remote(env_id) for _ in range(num_env)]
-
 
     result = ray.get([env.reset.remote() for env in envs])
 
