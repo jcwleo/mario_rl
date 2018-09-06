@@ -26,7 +26,7 @@ class BaseActorCriticNetwork(nn.Module):
 
     def forward(self, state):
         x = self.feature(state)
-        policy = F.softmax(self.actor(x), dim=-1)
+        policy = self.actor(x)
         value = self.critic(x)
         return policy, value
 
