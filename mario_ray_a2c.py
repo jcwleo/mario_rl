@@ -21,13 +21,20 @@ from skimage.color import rgb2gray
 
 @ray.remote
 class Environment(object):
-    def __init__(self, env_id):
+    def __init__(self, env_id, is_render):
         os.environ["MKL_NUM_THREADS"] = "1"
         self.env = gym.make(env_id)
+        self.is_render = is_render
 
     def step(self, action):
-        self.env.render()
-        return self.env.step(action)
+        if self.is_render:
+            self.env.render()
+        obs, reward, done, info = self.env.step(action)
+        
+        if done:
+            obs = self.reset()
+            
+        return obs, reward, done, info
 
     def reset(self):
         return self.env.reset()
@@ -85,9 +92,11 @@ if __name__ == '__main__':
     env.close()
 
     num_env = 2
+    is_render = False
     ray.init()
-    envs = [Environment.remote(env_id) for _ in range(num_env)]
-
+    envs = [Environment.remote(env_id, is_render) for _ in range(num_env)]
+    
+    # when Envs only run first, call reset().
     result = ray.get([env.reset.remote() for env in envs])
 
     for _ in range(1000):
