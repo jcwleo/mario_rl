@@ -3,20 +3,26 @@ import gym
 import os
 import random
 import numpy as np
+import copy
 
+import gym_super_mario_bros
+from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
 @ray.remote
 class Environment(object):
     def __init__(self, env_id):
         os.environ["MKL_NUM_THREADS"] = "1"
-        self.env = gym.make(env_id)
+        env = gym_super_mario_bros.make('SuperMarioBros-v2')
+        env = BinarySpaceToDiscreteSpaceEnv(env, SIMPLE_MOVEMENT)
+        self.env = env
 
     def step(self, action):
         self.env.render()
-        return self.env.step(action)
+        return copy.deepcopy(self.env.step(action))
 
     def reset(self):
-        return self.env.reset()
+        return copy.deepcopy(self.env.reset())
 
 
 if __name__ == '__main__':
