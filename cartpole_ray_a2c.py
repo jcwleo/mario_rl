@@ -41,7 +41,7 @@ class CartPoleEnvironment(object):
 
         if done:
             if self.steps < self.env.spec.timestep_limit:
-                reward = -100
+                reward = -1
 
             self.recent_rlist.append(self.rall)
             print("[Episode {}({})] Reward: {}  Recent Reward: {}".format(self.episode, self.env_idx, self.rall,
@@ -59,13 +59,15 @@ class CartPoleEnvironment(object):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma):
+    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True):
         self.model = BaseActorCriticNetwork(input_size, output_size)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
         self.num_step = num_step
         self.gamma = gamma
+        self.lam = lam
+        self.use_gae = use_gae
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
 
     def get_action(self, state):
@@ -148,19 +150,33 @@ class ActorAgent(object):
             next_value = next_value.detach().numpy()
 
             # Discounted Return
-            running_add = next_value[self.num_step - 1, 0] * (1 - d[self.num_step - 1, 0])
-            for t in range(self.num_step - 1, -1, -1):
-                if d[t]:
-                    running_add = 0
-                running_add = r[t] + self.gamma * running_add
-                discounted_return[t, 0] = running_add
+            if self.use_gae:
+                gae = 0
+                for t in range(self.num_step - 1, -1, -1):
+                    delta = r[t] + self.gamma * next_value[t, 0] * (1 - d[t]) - value[t, 0]
+                    gae = delta + self.gamma * self.lam * (1 - d[t]) * gae
 
-            # For critic
-            target = r + self.gamma * (1 - d) * next_value
+                    discounted_return[t, 0] = gae + value[t]
 
-            # For Actor
-            adv = discounted_return - value
-            # adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+                # For critic
+                target = r + self.gamma * (1 - d) * next_value
+
+                # For Actor
+                adv = discounted_return - value
+
+            else:
+                running_add = next_value[self.num_step - 1, 0] * (1 - d[self.num_step - 1, 0])
+                for t in range(self.num_step - 1, -1, -1):
+                    if d[t]:
+                        running_add = 0
+                    running_add = r[t] + self.gamma * running_add
+                    discounted_return[t, 0] = running_add
+
+                # For critic
+                target = r + self.gamma * (1 - d) * next_value
+
+                # For Actor
+                adv = discounted_return - value
 
             states.extend(s)
             targets.extend(target)
@@ -179,10 +195,11 @@ if __name__ == '__main__':
 
     num_env = 8
     num_step = 5
+    num_worker = 4
     gamma = 0.99
     agent = ActorAgent(input_size, output_size, num_env, num_step, gamma)
     is_render = False
-    ray.init()
+    ray.init(num_cpus=num_worker)
     envs = [CartPoleEnvironment.remote(env_id, is_render, idx) for idx in range(num_env)]
 
     # when Envs only run first, call reset().
