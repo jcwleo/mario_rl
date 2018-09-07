@@ -17,6 +17,7 @@ from collections import deque
 from copy import deepcopy
 from skimage.transform import resize
 from skimage.color import rgb2gray
+from itertools import chain
 
 
 @ray.remote
@@ -122,69 +123,71 @@ class ActorAgent(object):
         batchs = np.stack(batchs).transpose([1, 0, 2])
         return batchs
 
-    def make_train_date(self, batches):
-        states = []
-        targets = []
-        actions = []
-        advantages = []
+    def foward_transition(self, batches):
+        batches = np.concatenate(batches)
 
-        for idx in range(len(batches)):
-            sample = np.stack(batches[idx])
-            discounted_return = np.empty([self.num_step, 1])
+        s = np.reshape(np.stack(batches[:, 4]), [self.num_step * self.num_env, agent.input_size])
+        s1 = np.reshape(np.stack(batches[:, 0]), [self.num_step * self.num_env, agent.input_size])
 
-            s = np.reshape(np.stack(sample[:, 4]), [self.num_step, agent.input_size])
-            s1 = np.reshape(np.stack(sample[:, 0]), [self.num_step, agent.input_size])
-            y = sample[:, 5]
-            r = np.reshape(np.stack(sample[:, 1]), [self.num_step, 1])
-            d = np.reshape(np.stack(sample[:, 2]), [self.num_step, 1]).astype(int)
+        state = torch.from_numpy(s)
+        state = state.float()
+        _, value = agent.model(state)
 
-            state = torch.from_numpy(s)
-            state = state.float()
-            _, value = agent.model(state)
+        next_state = torch.from_numpy(s1)
+        next_state = next_state.float()
+        _, next_value = agent.model(next_state)
 
-            next_state = torch.from_numpy(s1)
-            next_state = next_state.float()
-            _, next_value = agent.model(next_state)
+        value = value.detach().numpy()
+        next_value = next_value.detach().numpy()
 
-            value = value.detach().numpy()
-            next_value = next_value.detach().numpy()
+        return value, next_value
 
-            # Discounted Return
-            if self.use_gae:
-                gae = 0
-                for t in range(self.num_step - 1, -1, -1):
-                    delta = r[t] + self.gamma * next_value[t, 0] * (1 - d[t]) - value[t, 0]
-                    gae = delta + self.gamma * self.lam * (1 - d[t]) * gae
 
-                    discounted_return[t, 0] = gae + value[t]
+@ray.remote
+def make_train_data(batches, value, next_value):
+    sample = np.stack(batches)
+    discounted_return = np.empty([num_step, 1])
 
-                # For critic
-                target = r + self.gamma * (1 - d) * next_value
+    s = np.reshape(np.stack(sample[:, 4]), [num_step, agent.input_size])
+    y = sample[:, 5]
+    r = np.reshape(np.stack(sample[:, 1]), [num_step, 1])
+    d = np.reshape(np.stack(sample[:, 2]), [num_step, 1]).astype(int)
 
-                # For Actor
-                adv = discounted_return - value
+    # Discounted Return
+    if use_gae:
+        gae = 0
+        for t in range(num_step - 1, -1, -1):
+            delta = r[t] + gamma * next_value[t, 0] * (1 - d[t]) - value[t, 0]
+            gae = delta + gamma * lam * (1 - d[t]) * gae
 
-            else:
-                running_add = next_value[self.num_step - 1, 0] * (1 - d[self.num_step - 1, 0])
-                for t in range(self.num_step - 1, -1, -1):
-                    if d[t]:
-                        running_add = 0
-                    running_add = r[t] + self.gamma * running_add
-                    discounted_return[t, 0] = running_add
+            discounted_return[t, 0] = gae + value[t]
 
-                # For critic
-                target = r + self.gamma * (1 - d) * next_value
+        # For critic
+        target = r + gamma * (1 - d) * next_value
 
-                # For Actor
-                adv = discounted_return - value
+        # For Actor
+        adv = discounted_return - value
 
-            states.extend(s)
-            targets.extend(target)
-            actions.extend(y)
-            advantages.extend(adv)
+    else:
+        running_add = next_value[num_step - 1, 0] * (1 - d[num_step - 1, 0])
+        for t in range(num_step - 1, -1, -1):
+            if d[t]:
+                running_add = 0
+            running_add = r[t] + gamma * running_add
+            discounted_return[t, 0] = running_add
 
-        return states, targets, actions, advantages
+        # For critic
+        target = r + gamma * (1 - d) * next_value
 
+        # For Actor
+        adv = discounted_return - value
+
+    return s, target, y, adv
+
+# @ray.remote
+# def change_state(result, obs, action):
+#     return (result + (obs,) + (action,))[0], (result + (obs,) + (action,))
+#
 
 if __name__ == '__main__':
     env_id = 'CartPole-v1'
@@ -193,10 +196,13 @@ if __name__ == '__main__':
     output_size = env.action_space.n  # 2
     env.close()
 
-    num_env = 8
+    num_env = 4
     num_step = 5
     num_worker = 4
     gamma = 0.99
+    lam = 0.95
+    use_gae = True
+
     agent = ActorAgent(input_size, output_size, num_env, num_step, gamma)
     is_render = False
     ray.init(num_cpus=num_worker)
@@ -211,6 +217,7 @@ if __name__ == '__main__':
             actions = agent.get_action(obs)
             result = ray.get([env.step.remote(action) for env, action in zip(envs, actions)])
 
+            # obs, result = ray.get([change_state.remote(result[i], obs[i], actions[i]) for i in range(num_env)])
             for i in range(num_env):
                 result[i] = result[i] + (obs[i],) + (actions[i],)
                 obs[i] = result[i][0]
@@ -218,7 +225,16 @@ if __name__ == '__main__':
             batchs.append(result)
 
         batchs = agent.reform_batch(batchs)
+        value, next_value = agent.foward_transition(batchs)
 
-        train_data = agent.make_train_date(batchs)
-        agent.train_model(*train_data)
+        train_data = ray.get([make_train_data.remote(batchs[idx], value[idx * num_step:(idx + 1) * num_step],
+                                                     next_value[idx * num_step:(idx + 1) * num_step]) for idx in range(num_env)])
+
+        train_data = list(chain.from_iterable(train_data))
+        states = np.vstack([train_data[4 * idx] for idx in range(num_env)])
+        targets = np.concatenate([train_data[4 * idx + 1] for idx in range(num_env)])
+        actions = np.concatenate([train_data[4 * idx + 2] for idx in range(num_env)]).astype(int)
+        advantages = np.concatenate([train_data[4 * idx + 3] for idx in range(num_env)])
+
+        agent.train_model(states, targets, actions, advantages)
         # print(train_data)
