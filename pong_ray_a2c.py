@@ -39,7 +39,7 @@ class PongEnvironment(object):
     def step(self, action):
         if self.is_render:
             self.env.render()
-        obs, reward, done, info = self.env.step(action)
+        obs, reward, done, info = self.env.step(action + 1)
 
         self.history[:3, :, :] = self.history[1:, :, :]
         self.history[3, :, :] = self.pre_proc(obs)
@@ -75,7 +75,7 @@ class PongEnvironment(object):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True):
+    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False):
         self.model = CnnActorCriticNetwork(input_size, output_size)
         self.num_env = num_env
         self.output_size = output_size
@@ -84,13 +84,16 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        self.device = torch.device('cuda' if use_cuda else 'cpu')
+
+        self.model = self.model.to(self.device)
 
     def get_action(self, state):
-        state = torch.Tensor(state)
+        state = torch.Tensor(state).to(self.device)
         state = state.float()
         policy, value = self.model(state)
-        policy = F.softmax(policy, dim=-1).detach().numpy()
+        policy = F.softmax(policy, dim=-1).data.cpu().numpy()
 
         action = self.random_choice_prob_index(policy)
 
@@ -103,10 +106,10 @@ class ActorAgent(object):
 
     def train_model(self, s_batch, target_batch, y_batch, adv_batch):
         with torch.no_grad():
-            s_batch = torch.FloatTensor(s_batch)
-            target_batch = torch.FloatTensor(target_batch)
-            y_batch = torch.LongTensor(y_batch)
-            adv_batch = torch.FloatTensor(adv_batch)
+            s_batch = torch.FloatTensor(s_batch).to(self.device)
+            target_batch = torch.FloatTensor(target_batch).to(self.device)
+            y_batch = torch.LongTensor(y_batch).to(self.device)
+            adv_batch = torch.FloatTensor(adv_batch).to(self.device)
 
         # for multiply advantage
         policy, value = self.model(s_batch)
@@ -154,16 +157,16 @@ class ActorAgent(object):
             r = np.reshape(np.stack(sample[:, 1]), [self.num_step, 1])
             d = np.reshape(np.stack(sample[:, 2]), [self.num_step, 1]).astype(int)
 
-            state = torch.from_numpy(s)
+            state = torch.from_numpy(s).to(self.device)
             state = state.float()
             _, value = agent.model(state)
 
-            next_state = torch.from_numpy(s1)
+            next_state = torch.from_numpy(s1).to(self.device)
             next_state = next_state.float()
             _, next_value = agent.model(next_state)
 
-            value = value.detach().numpy()
-            next_value = next_value.detach().numpy()
+            value = value.data.cpu().numpy()
+            next_value = next_value.data.cpu().numpy()
 
             # Discounted Return
             if self.use_gae:
@@ -207,13 +210,15 @@ if __name__ == '__main__':
     env = gym.make(env_id)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
-    env.close()
+    output_size = 3
 
+    env.close()
+    use_cuda = False
     num_env = 1
     num_step = 5
     num_worker = 4
     gamma = 0.99
-    agent = ActorAgent(input_size, output_size, num_env, num_step, gamma)
+    agent = ActorAgent(input_size, output_size, num_env, num_step, gamma, use_cuda)
     is_render = False
     ray.init(num_cpus=num_worker)
     envs = [PongEnvironment.remote(env_id, is_render, idx) for idx in range(num_env)]
@@ -225,6 +230,7 @@ if __name__ == '__main__':
         batchs = []
         for _ in range(num_step):
             actions = agent.get_action(obs)
+
             result = ray.get([env.step.remote(action) for env, action in zip(envs, actions)])
 
             for i in range(num_env):
