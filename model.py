@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch
 import torch.optim as optim
 import numpy as np
+from torch.nn import init
 
 from torch.distributions.categorical import Categorical
 
@@ -44,6 +45,16 @@ class CnnActorCriticNetwork(nn.Module):
         )
         self.actor = nn.Linear(256, output_size)
         self.critic = nn.Linear(256, 1)
+
+        for p in self.modules():
+            if isinstance(p, nn.Conv2d):
+                init.kaiming_uniform_(p.weight)
+                p.bias.data.zero_()
+
+            if isinstance(p, nn.Linear):
+                init.kaiming_uniform_(p.weight, a=1.0)
+                p.bias.data.zero_()
+
 
     def forward(self, state):
         x = self.feature(state)
