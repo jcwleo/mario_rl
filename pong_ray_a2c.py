@@ -22,7 +22,7 @@ from tensorboardX import SummaryWriter
 
 
 class PongEnvironment(Process):
-    def __init__(self, env_id, is_render, env_idx, child_conn, writer, history_size=4, h=84, w=84):
+    def __init__(self, env_id, is_render, env_idx, child_conn, history_size=4, h=84, w=84):
         super(PongEnvironment, self).__init__()
         self.daemon = True
         self.env = gym.make(env_id)
@@ -39,7 +39,6 @@ class PongEnvironment(Process):
         self.history = np.zeros([history_size, h, w])
         self.h = h
         self.w = w
-        self.writer = writer
 
         self.reset()
 
@@ -62,8 +61,6 @@ class PongEnvironment(Process):
                 print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}".format(self.episode, self.env_idx,
                                                                                         self.steps, self.rall,
                                                                                         np.mean(self.recent_rlist)))
-                self.writer.add_scalar('data/env{}/reward'.format(self.env_idx), self.rall, self.episode)
-                self.writer.add_scalar('data/env{}/step'.format(self.env_idx), self.steps, self.episode)
 
                 self.history = self.reset()
 
@@ -228,13 +225,18 @@ if __name__ == '__main__':
     child_conns = []
     for idx in range(num_worker):
         parent_conn, child_conn = Pipe()
-        work = PongEnvironment(env_id, is_render, idx, child_conn, writer)
+        work = PongEnvironment(env_id, is_render, idx, child_conn)
         work.start()
         works.append(work)
         parent_conns.append(parent_conn)
         child_conns.append(child_conn)
 
     states = np.zeros([num_worker * num_worker_per_env, 4, 84, 84])
+
+    sample_episode = 0
+    sample_rall = 0
+    sample_step = 0
+    sample_env_idx = 0
 
     while True:
         total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
@@ -261,6 +263,15 @@ if __name__ == '__main__':
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
+
+            sample_rall += rewards[sample_env_idx]
+            sample_step += 1
+            if dones[sample_env_idx]:
+                sample_episode += 1
+                writer.add_scalar('data/reward', sample_rall, sample_episode)
+                writer.add_scalar('data/step', sample_step, sample_episode)
+                sample_rall = 0
+                sample_step = 0
 
         total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
         total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
