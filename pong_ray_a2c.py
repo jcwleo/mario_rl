@@ -180,7 +180,7 @@ def make_train_data(reward, done, value, next_value):
         adv = discounted_return - value
 
     else:
-        running_add = next_value[num_step - 1, 0] * (1 - done[num_step - 1, 0])
+        running_add = next_value[num_step - 1] * (1 - done[num_step - 1])
         for t in range(num_step - 1, -1, -1):
             if d[t]:
                 running_add = 0
