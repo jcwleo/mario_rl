@@ -118,7 +118,7 @@ class ActorAgent(object):
     def forward_transition(self, state, next_state):
         state = torch.from_numpy(state).to(self.device)
         state = state.float()
-        _, value = agent.model(state)
+        policy, value = agent.model(state)
 
         next_state = torch.from_numpy(next_state).to(self.device)
         next_state = next_state.float()
@@ -127,7 +127,7 @@ class ActorAgent(object):
         value = value.data.cpu().numpy().squeeze()
         next_value = next_value.data.cpu().numpy().squeeze()
 
-        return value, next_value
+        return value, next_value, policy
 
     def train_model(self, s_batch, target_batch, y_batch, adv_batch):
         with torch.no_grad():
@@ -157,7 +157,7 @@ class ActorAgent(object):
 
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 3)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 40)
         self.optimizer.step()
 
 
@@ -197,7 +197,7 @@ def make_train_data(reward, done, value, next_value):
 
 
 if __name__ == '__main__':
-    env_id = 'PongDeterministic-v4'
+    env_id = 'BreakoutDeterministic-v4'
     env = gym.make(env_id)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
@@ -207,6 +207,10 @@ if __name__ == '__main__':
     writer = SummaryWriter()
     use_cuda = True
     use_gae = True
+    is_load_model = False
+    is_render = False
+
+    model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
     num_worker = 16
@@ -218,7 +222,9 @@ if __name__ == '__main__':
     alpha = 0.99
     gamma = 0.99
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
-    is_render = False
+
+    if is_load_model:
+        agent.model.load_state_dict(torch.load(model_path))
 
     works = []
     parent_conns = []
@@ -237,9 +243,12 @@ if __name__ == '__main__':
     sample_rall = 0
     sample_step = 0
     sample_env_idx = 0
+    total_step = 0
+    recent_prob = deque(maxlen=100)
 
     while True:
         total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
+        total_step += (num_worker * num_step)
 
         for _ in range(num_step):
             actions = agent.get_action(states)
@@ -257,14 +266,14 @@ if __name__ == '__main__':
             next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
-            
+
             total_state.append(states)
             total_next_state.append(next_states)
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
-            
-            states = next_states[:,:,:,:]
+
+            states = next_states[:, :, :, :]
 
             sample_rall += rewards[sample_env_idx]
             sample_step += 1
@@ -281,7 +290,12 @@ if __name__ == '__main__':
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose().reshape([-1])
 
-        value, next_value = agent.forward_transition(total_state, total_next_state)
+        value, next_value, policy = agent.forward_transition(total_state, total_next_state)
+
+        policy = policy.detach()
+        m = F.softmax(policy, dim=-1)
+        recent_prob.append(m.max(1)[0].mean().cpu().numpy())
+        writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
 
         total_target = []
         total_adv = []
@@ -295,3 +309,6 @@ if __name__ == '__main__':
             total_adv.append(adv)
 
         agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+
+        if total_step % 40000 == 0:
+            torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))

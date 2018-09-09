@@ -1,8 +1,9 @@
-
 import cv2
 
 from model import *
 
+import numpy as np
+import torch
 import torch.optim as optim
 from torch.multiprocessing import Pipe, Process
 from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
@@ -46,12 +47,13 @@ class MarioEnvironment(Process):
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
 
-            self.rall += reward
+            r = np.clip(reward, -1, 1)
+            self.rall += r
             self.steps += 1
 
             if reward == -15:
                 done = True
-                reward = -10
+                r = -10
 
             if done:
                 self.recent_rlist.append(self.rall)
@@ -61,7 +63,7 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), done, info])
+            self.child_conn.send([self.history[:, :, :], r, done, info])
 
     def reset(self):
         self.steps = 0
@@ -116,7 +118,7 @@ class ActorAgent(object):
     def forward_transition(self, state, next_state):
         state = torch.from_numpy(state).to(self.device)
         state = state.float()
-        _, value = agent.model(state)
+        policy, value = agent.model(state)
 
         next_state = torch.from_numpy(next_state).to(self.device)
         next_state = next_state.float()
@@ -125,7 +127,7 @@ class ActorAgent(object):
         value = value.data.cpu().numpy().squeeze()
         next_value = next_value.data.cpu().numpy().squeeze()
 
-        return value, next_value
+        return value, next_value, policy
 
     def train_model(self, s_batch, target_batch, y_batch, adv_batch):
         with torch.no_grad():
@@ -178,7 +180,7 @@ def make_train_data(reward, done, value, next_value):
         adv = discounted_return - value
 
     else:
-        running_add = next_value[num_step - 1, 0] * (1 - done[num_step - 1, 0])
+        running_add = next_value[num_step] * (1 - done[num_step])
         for t in range(num_step - 1, -1, -1):
             if d[t]:
                 running_add = 0
@@ -206,6 +208,10 @@ if __name__ == '__main__':
     writer = SummaryWriter()
     use_cuda = True
     use_gae = True
+    is_load_model = False
+    is_render = False
+
+    model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
     num_worker = 16
@@ -216,8 +222,13 @@ if __name__ == '__main__':
     entropy = 0.02
     alpha = 0.99
     gamma = 0.99
+    max_step = 1.15e+10
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
-    is_render = True
+
+    if is_load_model:
+        agent.model.load_state_dict(torch.load(model_path))
+
+
 
     works = []
     parent_conns = []
@@ -236,9 +247,12 @@ if __name__ == '__main__':
     sample_rall = 0
     sample_step = 0
     sample_env_idx = 0
+    total_step = 0
+    recent_prob = deque(maxlen=100)
 
     while True:
         total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
+        total_step += (num_worker * num_step)
 
         for _ in range(num_step):
             actions = agent.get_action(states)
@@ -246,22 +260,24 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            total_next_state.append(states)
-            states, rewards, dones, next_states = [], [], [], []
+            next_states, rewards, dones = [], [], []
             for parent_conn in parent_conns:
                 s, r, d, _ = parent_conn.recv()
-                states.append(s)
+                next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
 
-            states = np.stack(states)
+            next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
 
             total_state.append(states)
+            total_next_state.append(next_states)
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
+
+            states = next_states[:, :, :, :]
 
             sample_rall += rewards[sample_env_idx]
             sample_step += 1
@@ -278,7 +294,12 @@ if __name__ == '__main__':
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose().reshape([-1])
 
-        value, next_value = agent.forward_transition(total_state, total_next_state)
+        value, next_value, policy = agent.forward_transition(total_state, total_next_state)
+
+        policy = policy.detach()
+        m = F.softmax(policy, dim=-1)
+        recent_prob.append(m.max(1)[0].mean().cpu().numpy())
+        writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
 
         total_target = []
         total_adv = []
@@ -292,3 +313,6 @@ if __name__ == '__main__':
             total_adv.append(adv)
 
         agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+
+        if total_step % 40000 == 0:
+            torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))

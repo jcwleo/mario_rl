@@ -78,7 +78,7 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        self.optimizer = optim.RMSprop(self.model.parameters(), lr=0.0224, eps=0.1, alpha=0.99)
         self.device = torch.device('cuda' if use_cuda else 'cpu')
         self.model = self.model.to(self.device)
 
@@ -192,7 +192,7 @@ if __name__ == '__main__':
     lam = 0.95
     use_gae = True
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
+    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_gae=False, use_cuda=use_cuda)
     is_render = False
 
     works = []
@@ -215,22 +215,24 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            total_next_state.append(states)
-            states, rewards, dones, next_states = [], [], [], []
+            rewards, dones, next_states = [], [], []
             for parent_conn in parent_conns:
                 s, r, d, _ = parent_conn.recv()
-                states.append(s)
+                next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
 
-            states = np.vstack(states)
+            next_states = np.vstack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
 
+            total_next_state.append(next_states)
             total_state.append(states)
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
+
+            states = next_states[:,:]
 
         total_state = np.stack(total_state).transpose([1, 0, 2]).reshape([-1, input_size])
         total_next_state = np.stack(total_next_state).transpose([1, 0, 2]).reshape([-1, input_size])
