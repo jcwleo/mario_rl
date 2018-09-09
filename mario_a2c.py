@@ -1,310 +1,294 @@
-import gym_super_mario_bros
-from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-import time
 
-import numpy as np
+import cv2
 
-import torch.nn.functional as F
+from model import *
+
 import torch.optim as optim
-import torch.multiprocessing as mp
-
-import torch.nn as nn
-import torch
+from torch.multiprocessing import Pipe, Process
+from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
+import gym_super_mario_bros
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
 from collections import deque
-from copy import deepcopy
-from skimage.transform import resize
-from skimage.color import rgb2gray
 
-from torch.distributions.categorical import Categorical
+from tensorboardX import SummaryWriter
 
 
-class Flatten(nn.Module):
-    def forward(self, input):
-        return input.view(input.size(0), -1)
+class MarioEnvironment(Process):
+    def __init__(self, env_id, is_render, env_idx, child_conn, history_size=4, h=84, w=84):
+        super(MarioEnvironment, self).__init__()
+        self.daemon = True
+        self.env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
+
+        self.is_render = is_render
+        self.env_idx = env_idx
+        self.steps = 0
+        self.episode = 0
+        self.rall = 0
+        self.recent_rlist = deque(maxlen=100)
+        self.child_conn = child_conn
+
+        self.history_size = history_size
+        self.history = np.zeros([history_size, h, w])
+        self.h = h
+        self.w = w
+
+        self.reset()
+
+    def run(self):
+        super(MarioEnvironment, self).run()
+        while True:
+            action = self.child_conn.recv()
+            if self.is_render:
+                self.env.render()
+            obs, reward, done, info = self.env.step(action)
+
+            self.history[:3, :, :] = self.history[1:, :, :]
+            self.history[3, :, :] = self.pre_proc(obs)
+
+            self.rall += reward
+            self.steps += 1
+
+            if reward == -15:
+                done = True
+                reward = -10
+
+            if done:
+                self.recent_rlist.append(self.rall)
+                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}".format(self.episode, self.env_idx,
+                                                                                        self.steps, self.rall,
+                                                                                        np.mean(self.recent_rlist)))
+
+                self.history = self.reset()
+
+            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), done, info])
+
+    def reset(self):
+        self.steps = 0
+        self.episode += 1
+        self.rall = 0
+        # self.env.reset()
+        self.get_init_state(self.env.reset())
+        return self.history[:, :, :]
+
+    def pre_proc(self, X):
+        x = cv2.cvtColor(X, cv2.COLOR_RGB2GRAY)
+        x = cv2.resize(x, (self.h, self.w))
+        x = np.float32(x) * (1.0 / 255.0)
+
+        return x
+
+    def get_init_state(self, s):
+        for i in range(self.history_size):
+            self.history[i, :, :] = self.pre_proc(s)
 
 
-def make_batch(sample, agent):
-    sample = np.stack(sample)
-    discounted_return = np.empty([NUM_STEP, 1])
-
-    s = np.stack(sample[:, 0])
-    s1 = np.stack(sample[:, 3])
-    y = sample[:, 1]
-    r = np.reshape(np.stack(sample[:, 2]), [NUM_STEP, 1])
-    d = np.reshape(np.stack(sample[:, 4]), [NUM_STEP, 1]).astype(int)
-
-    state = torch.from_numpy(s)
-    state = state.float()
-    _, value = agent.model(state)
-
-    next_state = torch.from_numpy(s1)
-    next_state = next_state.float()
-    _, next_value = agent.model(next_state)
-
-    value = value.data.numpy()
-    next_value = next_value.data.numpy()
-
-    # Discounted Return
-    running_add = next_value[NUM_STEP - 1, 0] * (1 - d[NUM_STEP - 1, 0])
-    for t in range(NUM_STEP - 1, -1, -1):
-        if d[t]:
-            running_add = 0
-        running_add = r[t] + DISCOUNT * running_add
-        discounted_return[t, 0] = running_add
-
-    # For critic
-    target = r + DISCOUNT * (1 - d) * next_value
-
-    # For Actor
-    adv = discounted_return - value
-    # adv = (adv - adv.mean()) / (adv.std() + 1e-5)
-
-    return [s, target, y, adv]
-
-
-class ActorCriticNetwork(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(ActorCriticNetwork, self).__init__()
-        self.feature = nn.Sequential(
-            nn.Conv2d(in_channels=4, out_channels=16, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2),
-            nn.ReLU(),
-            Flatten(),
-            nn.Linear(9 * 9 * 32, 256),
-        )
-        self.actor = nn.Linear(256, output_size)
-        self.critic = nn.Linear(256, 1)
-
-    def forward(self, state):
-        x = self.feature(state)
-        policy = F.softmax(self.actor(x), dim=-1)
-        value = self.critic(x)
-        return policy, value
-
-
-# PAAC(Parallel Advantage Actor Critic)
 class ActorAgent(object):
-    def __init__(self):
-        self.model = ActorCriticNetwork(INPUT, OUTPUT)
+    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False):
+        self.model = CnnActorCriticNetwork(input_size, output_size)
+        self.num_env = num_env
+        self.output_size = output_size
+        self.input_size = input_size
+        self.num_step = num_step
+        self.gamma = gamma
+        self.lam = lam
+        self.use_gae = use_gae
+        self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
+        self.device = torch.device('cuda' if use_cuda else 'cpu')
 
-        self.model.share_memory()
-
-        self.output_size = OUTPUT
-        self.input_size = INPUT
+        self.model = self.model.to(self.device)
 
     def get_action(self, state):
-        state = torch.from_numpy(state).unsqueeze(0)
+        state = torch.Tensor(state).to(self.device)
         state = state.float()
         policy, value = self.model(state)
-        policy = policy.detach().numpy()
-        action = np.random.choice(np.arange(OUTPUT), p=policy[0])
+        policy = F.softmax(policy, dim=-1).data.cpu().numpy()
+
+        action = self.random_choice_prob_index(policy)
 
         return action
 
-    # after some time interval update the target model to be same with model
-    def update_actor_model(self, target):
-        self.model.load_state_dict(target.state_dict())
+    @staticmethod
+    def random_choice_prob_index(p, axis=1):
+        r = np.expand_dims(np.random.rand(p.shape[1 - axis]), axis=axis)
+        return (p.cumsum(axis=axis) > r).argmax(axis=axis)
 
+    def forward_transition(self, state, next_state):
+        state = torch.from_numpy(state).to(self.device)
+        state = state.float()
+        _, value = agent.model(state)
 
-class LearnerAgent(object):
-    def __init__(self):
-        self.model = ActorCriticNetwork(INPUT, OUTPUT)
-        # self.model.cuda()
-        self.output_size = OUTPUT
-        self.input_size = INPUT
-        self.optimizer = optim.RMSprop(self.model.parameters(), lr=LEARNING_RATE, eps=0.1, weight_decay=0.99)
+        next_state = torch.from_numpy(next_state).to(self.device)
+        next_state = next_state.float()
+        _, next_value = agent.model(next_state)
+
+        value = value.data.cpu().numpy().squeeze()
+        next_value = next_value.data.cpu().numpy().squeeze()
+
+        return value, next_value
 
     def train_model(self, s_batch, target_batch, y_batch, adv_batch):
-        s_batch = torch.FloatTensor(s_batch)
-        target_batch = torch.FloatTensor(target_batch)
-        y_batch = torch.LongTensor(y_batch)
-        adv_batch = torch.FloatTensor(adv_batch)
+        with torch.no_grad():
+            s_batch = torch.FloatTensor(s_batch).to(self.device)
+            target_batch = torch.FloatTensor(target_batch).to(self.device)
+            y_batch = torch.LongTensor(y_batch).to(self.device)
+            adv_batch = torch.FloatTensor(adv_batch).to(self.device)
+
         # for multiply advantage
         policy, value = self.model(s_batch)
-        m = Categorical(policy)
+        m = Categorical(F.softmax(policy, dim=-1))
 
         # mse = nn.SmoothL1Loss()
         mse = nn.MSELoss()
 
         # Actor loss
-        actor_loss = -m.log_prob(y_batch) * adv_batch.sum(1)
+        actor_loss = -m.log_prob(y_batch) * adv_batch
 
         # Entropy(for more exploration)
         entropy = m.entropy()
+
         # Critic loss
-        critic_loss = mse(value, target_batch)
+        critic_loss = mse(value.sum(1), target_batch)
 
         # Total loss
         loss = actor_loss.mean() + 0.5 * critic_loss - 0.01 * entropy.mean()
+
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm(self.model.parameters(), 3)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 3)
         self.optimizer.step()
 
 
-class Environment(object):
-    def __init__(self, env, idx):
-        self.env = env
-        self.obs = self.env.reset()
-        self.next_obs = None
-        self.done = False
-        self.env_idx = idx
-        self.step = 0
-        self.episode = 0
-        self.rall = 0
-        self.history = np.zeros([5, 84, 84])
-        self.history = self.get_init_state(self.history, self.obs)
-        self.recent_rlist = deque(maxlen=100)
-        self.recent_rlist.append(0)
-        self.ter = False
+def make_train_data(reward, done, value, next_value):
+    discounted_return = np.empty([num_step])
 
-    @staticmethod
-    def pre_proc(X):
-        x = resize(rgb2gray(X), (84, 84), mode='reflect')
-        return x
+    # Discounted Return
+    if use_gae:
+        gae = 0
+        for t in range(num_step - 1, -1, -1):
+            delta = reward[t] + gamma * next_value[t] * (1 - done[t]) - value[t]
+            gae = delta + gamma * lam * (1 - done[t]) * gae
 
-    @staticmethod
-    def get_init_state(history, s):
-        for i in range(4):
-            history[i, :, :] = Environment.pre_proc(s)
-        return history
+            discounted_return[t] = gae + value[t]
 
-    def run(self, agent):
-        sample = []
-        for _ in range(NUM_STEP):
-            if self.env_idx == 0:
-                self.env.render()
-            self.step += 1
-            action = agent.get_action(self.history[:4, :, :])
-            self.next_obs, reward, self.done, _ = self.env.step(action)
-            self.next_obs = Environment.pre_proc(self.next_obs)
-            self.history[4, :, :] = self.next_obs
+        # For critic
+        target = reward + gamma * (1 - done) * next_value
 
-            r = np.clip(reward, -1, 1)
+        # For Actor
+        adv = discounted_return - value
 
-            self.rall += r
-            if reward == -15:
-                self.done = True
-                r = -100
+    else:
+        running_add = next_value[num_step - 1, 0] * (1 - done[num_step - 1, 0])
+        for t in range(num_step - 1, -1, -1):
+            if d[t]:
+                running_add = 0
+            running_add = reward[t] + gamma * running_add
+            discounted_return[t] = running_add
 
-            sample.append([self.history[:4, :, :], action, r, self.history[1:, :, :], self.done])
+        # For critic
+        target = r + gamma * (1 - done) * next_value
 
-            self.history[:4, :, :] = self.history[1:, :, :]
+        # For Actor
+        adv = discounted_return - value
 
-            if self.done:
-                self.episode += 1
-
-                self.recent_rlist.append(self.rall)
-                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}"
-                      .format(self.episode, self.env_idx, self.step, self.rall, np.mean(self.recent_rlist)))
-
-                self.obs = self.env.reset()
-                self.history = np.zeros([5, 84, 84])
-                self.history = self.get_init_state(self.history, self.obs)
-                self.done = False
-                self.step = 0
-                self.rall = 0
-
-        return make_batch(sample, agent)
-
-
-def runner(env, cond, memory, actor):
-    while True:
-        with cond:
-            sample = env.run(actor)
-            memory.put(sample)
-
-            # wait runner
-
-            cond.wait()
-
-
-def learner(cond, memory, actor_agent, learner_agent):
-    train_step = 0
-
-    while True:
-        if memory.full():
-            train_step += 1
-            s_batch, target_batch, y_batch, adv_batch = [], [], [], []
-            # while memory.qsize() != 0:
-            # if you use MacOS, use under condition.
-            if NUM_ENV == 1:
-                batch = memory.get()
-                s_batch.extend(batch[0])
-                target_batch.extend(batch[1])
-                y_batch.extend(batch[2])
-                adv_batch.extend(batch[3])
-            else:
-                while not memory.empty():
-                    batch = memory.get()
-
-                    s_batch.extend(batch[0])
-                    target_batch.extend(batch[1])
-                    y_batch.extend(batch[2])
-                    adv_batch.extend(batch[3])
-
-            # train
-            learner_agent.train_model(s_batch, target_batch, y_batch, adv_batch)
-            actor_agent.update_actor_model(learner_agent.model)
-            if train_step % 500 == 0:
-                torch.save(learner_agent.model, "./save_model/save_model")
-            # resume running
-            with cond:
-                cond.notify_all()
-
-
-def main():
-    num_envs = NUM_ENV
-    memory = mp.Queue(maxsize=NUM_ENV)
-    cond = mp.Condition()
-
-    # make agent and share memory
-    actor_agent = ActorAgent()
-    learner_agent = LearnerAgent()
-
-    # sync model
-    actor_agent.update_actor_model(learner_agent.model)
-
-    # make envs
-    envs = [
-        Environment(BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make('SuperMarioBros-v2'), SIMPLE_MOVEMENT), i)
-        for i in range(num_envs)]
-
-    learn_proc = mp.Process(target=learner, args=(cond, memory, actor_agent, learner_agent))
-
-    # Runner Process(just run, not learn)
-    runners = []
-    for idx, env in enumerate(envs):
-        np.random.seed(idx + 1000)
-        run_proc = mp.Process(target=runner, args=(env, cond, memory, actor_agent))
-        time.sleep(1)
-        run_proc.start()
-        runners.append(run_proc)
-
-    learn_proc.start()
-
-    for proc in runners:
-        proc.join()
-
-    # Learner Process(only Learn)
-    learn_proc.join()
+    return target, adv
 
 
 if __name__ == '__main__':
-    env = gym_super_mario_bros.make('SuperMarioBros-v2')
-    env = BinarySpaceToDiscreteSpaceEnv(env, SIMPLE_MOVEMENT)
-    env.close()
-    # Hyper parameter
-    INPUT = env.observation_space.shape[0]
-    OUTPUT = env.action_space.n
-    DISCOUNT = 0.99
-    NUM_STEP = 5
-    NUM_ENV = 8
-    EPSILON = 1e-5
-    ALPHA = 0.99
-    LEARNING_RATE = 0.0007 * NUM_ENV
+    env_id = 'SuperMarioBros-v2'
+    env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
+    input_size = env.observation_space.shape  # 4
+    output_size = env.action_space.n  # 2
+    print(output_size)
 
-    main()
+    env.close()
+
+    writer = SummaryWriter()
+    use_cuda = True
+    use_gae = True
+
+    lam = 0.95
+    num_worker = 16
+    num_worker_per_env = 1
+    num_step = 5
+    learning_rate = 0.0007 * num_worker
+    epslion = 0.1
+    entropy = 0.02
+    alpha = 0.99
+    gamma = 0.99
+    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
+    is_render = True
+
+    works = []
+    parent_conns = []
+    child_conns = []
+    for idx in range(num_worker):
+        parent_conn, child_conn = Pipe()
+        work = MarioEnvironment(env_id, is_render, idx, child_conn)
+        work.start()
+        works.append(work)
+        parent_conns.append(parent_conn)
+        child_conns.append(child_conn)
+
+    states = np.zeros([num_worker * num_worker_per_env, 4, 84, 84])
+
+    sample_episode = 0
+    sample_rall = 0
+    sample_step = 0
+    sample_env_idx = 0
+
+    while True:
+        total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
+
+        for _ in range(num_step):
+            actions = agent.get_action(states)
+
+            for parent_conn, action in zip(parent_conns, actions):
+                parent_conn.send(action)
+
+            total_next_state.append(states)
+            states, rewards, dones, next_states = [], [], [], []
+            for parent_conn in parent_conns:
+                s, r, d, _ = parent_conn.recv()
+                states.append(s)
+                rewards.append(r)
+                dones.append(d)
+
+            states = np.stack(states)
+            rewards = np.hstack(rewards)
+            dones = np.hstack(dones)
+
+            total_state.append(states)
+            total_reward.append(rewards)
+            total_done.append(dones)
+            total_action.append(actions)
+
+            sample_rall += rewards[sample_env_idx]
+            sample_step += 1
+            if dones[sample_env_idx]:
+                sample_episode += 1
+                writer.add_scalar('data/reward', sample_rall, sample_episode)
+                writer.add_scalar('data/step', sample_step, sample_episode)
+                sample_rall = 0
+                sample_step = 0
+
+        total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_reward = np.stack(total_reward).transpose().reshape([-1])
+        total_action = np.stack(total_action).transpose().reshape([-1])
+        total_done = np.stack(total_done).transpose().reshape([-1])
+
+        value, next_value = agent.forward_transition(total_state, total_next_state)
+
+        total_target = []
+        total_adv = []
+        for idx in range(num_worker):
+            target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
+                                          total_done[idx * num_step:(idx + 1) * num_step],
+                                          value[idx * num_step:(idx + 1) * num_step],
+                                          next_value[idx * num_step:(idx + 1) * num_step])
+            # print(target.shape)
+            total_target.append(target)
+            total_adv.append(adv)
+
+        agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
