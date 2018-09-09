@@ -247,22 +247,24 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            total_next_state.append(states)
-            states, rewards, dones, next_states = [], [], [], []
+            next_states, rewards, dones, next_states = [], [], [], []
             for parent_conn in parent_conns:
                 s, r, d, _ = parent_conn.recv()
-                states.append(s)
+                next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
 
-            states = np.stack(states)
+            next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
-
+            
             total_state.append(states)
+            total_next_state.append(next_states)
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
+            
+            states = next_states[:,:,:,:]
 
             sample_rall += rewards[sample_env_idx]
             sample_step += 1
