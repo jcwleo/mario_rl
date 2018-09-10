@@ -157,7 +157,7 @@ class ActorAgent(object):
 
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 40)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
         self.optimizer.step()
 
 
@@ -223,6 +223,8 @@ if __name__ == '__main__':
     entropy = 0.02
     alpha = 0.99
     gamma = 0.99
+    clip_grad_norm = 3.0
+    
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
     if is_load_model:
