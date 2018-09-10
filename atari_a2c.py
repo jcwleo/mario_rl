@@ -41,6 +41,7 @@ class AtariEnvironment(Process):
         self.w = w
 
         self.reset()
+        self.lives = self.env.env.ale.lives()
 
     def run(self):
         super(AtariEnvironment, self).run()
@@ -49,6 +50,12 @@ class AtariEnvironment(Process):
             if self.is_render:
                 self.env.render()
             _, reward, done, info = self.env.step(action)
+
+            if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
+                force_done = True
+                self.lives = info['ale.lives']
+            else:
+                force_done = done
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
@@ -64,7 +71,7 @@ class AtariEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), done, info])
+            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), force_done, info])
 
     def reset(self):
         self.steps = 0
@@ -224,7 +231,7 @@ if __name__ == '__main__':
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 3.0
-    
+
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
     if is_load_model:
