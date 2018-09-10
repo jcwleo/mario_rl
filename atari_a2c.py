@@ -71,7 +71,7 @@ class AtariEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), force_done, done])
+            self.child_conn.send([self.history[:, :, :], reward, force_done, done])
 
     def reset(self):
         self.steps = 0
@@ -299,7 +299,7 @@ if __name__ == '__main__':
 
         total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
         total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_reward = np.stack(total_reward).transpose().reshape([-1])
+        total_reward = np.stack(total_reward).transpose().reshape([-1]).clip(-1, 1)
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose().reshape([-1])
 
