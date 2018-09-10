@@ -21,9 +21,9 @@ from collections import deque
 from tensorboardX import SummaryWriter
 
 
-class PongEnvironment(Process):
+class AtariEnvironment(Process):
     def __init__(self, env_id, is_render, env_idx, child_conn, history_size=4, h=84, w=84):
-        super(PongEnvironment, self).__init__()
+        super(AtariEnvironment, self).__init__()
         self.daemon = True
         self.env = gym.make(env_id)
 
@@ -43,7 +43,7 @@ class PongEnvironment(Process):
         self.reset()
 
     def run(self):
-        super(PongEnvironment, self).run()
+        super(AtariEnvironment, self).run()
         while True:
             action = self.child_conn.recv()
             if self.is_render:
@@ -193,6 +193,8 @@ def make_train_data(reward, done, value, next_value):
         # For Actor
         adv = discounted_return - value
 
+    adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+
     return target, adv
 
 
@@ -231,7 +233,7 @@ if __name__ == '__main__':
     child_conns = []
     for idx in range(num_worker):
         parent_conn, child_conn = Pipe()
-        work = PongEnvironment(env_id, is_render, idx, child_conn)
+        work = AtariEnvironment(env_id, is_render, idx, child_conn)
         work.start()
         works.append(work)
         parent_conns.append(parent_conn)

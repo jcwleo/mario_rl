@@ -174,7 +174,10 @@ def make_train_data(reward, done, value, next_value):
         # For Actor
         adv = discounted_return - value
 
+    adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+
     return target, adv
+
 
 if __name__ == '__main__':
     env_id = 'CartPole-v1'
@@ -192,7 +195,8 @@ if __name__ == '__main__':
     lam = 0.95
     use_gae = True
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_gae=False, use_cuda=use_cuda)
+    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_gae=False,
+                       use_cuda=use_cuda)
     is_render = False
 
     works = []
@@ -232,7 +236,7 @@ if __name__ == '__main__':
             total_done.append(dones)
             total_action.append(actions)
 
-            states = next_states[:,:]
+            states = next_states[:, :]
 
         total_state = np.stack(total_state).transpose([1, 0, 2]).reshape([-1, input_size])
         total_next_state = np.stack(total_next_state).transpose([1, 0, 2]).reshape([-1, input_size])
