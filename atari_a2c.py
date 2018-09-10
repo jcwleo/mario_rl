@@ -102,8 +102,8 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
-        # self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        # self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
@@ -188,15 +188,11 @@ def make_train_data(reward, done, value, next_value):
         adv = discounted_return - value
 
     else:
-        running_add = next_value[num_step - 1] * (1 - done[num_step - 1])
         for t in range(num_step - 1, -1, -1):
-            if done[t]:
-                running_add = 0
-            running_add = reward[t] + gamma * running_add
+            running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
             discounted_return[t] = running_add
-
         # For critic
-        target = r + gamma * (1 - done) * next_value
+        target = reward + gamma * (1 - done) * next_value
 
         # For Actor
         adv = discounted_return - value
@@ -229,13 +225,13 @@ if __name__ == '__main__':
     num_worker_per_env = 1
     num_step = 5
     max_step = 1.15e8
-    learning_rate = 0.0007 * num_worker
-    # learning_rate = 0.00025
+    # learning_rate = 0.0007 * num_worker
+    learning_rate = 0.00025
     epslion = 0.1
     entropy_coef = 0.01
     alpha = 0.99
     gamma = 0.99
-    clip_grad_norm = 40.0
+    clip_grad_norm = 3.0
 
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
