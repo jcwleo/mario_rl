@@ -186,7 +186,7 @@ if __name__ == '__main__':
     output_size = env.action_space.n  # 2
     env.close()
 
-    use_cuda = True
+    use_cuda = False
     num_worker_per_env = 1
     num_step = 5
     num_worker = 16
@@ -195,7 +195,7 @@ if __name__ == '__main__':
     lam = 0.95
     use_gae = True
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_gae=False,
+    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_gae=use_gae,
                        use_cuda=use_cuda)
     is_render = False
 
@@ -235,8 +235,11 @@ if __name__ == '__main__':
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
-
+            before = np.copy(total_state[-1])
             states = next_states[:, :]
+            after = total_state[-1]
+            print(np.array_equal(before, after))
+
 
         total_state = np.stack(total_state).transpose([1, 0, 2]).reshape([-1, input_size])
         total_next_state = np.stack(total_next_state).transpose([1, 0, 2]).reshape([-1, input_size])
