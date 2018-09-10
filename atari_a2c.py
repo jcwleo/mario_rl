@@ -71,7 +71,7 @@ class AtariEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), force_done, info])
+            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), force_done, done])
 
     def reset(self):
         self.steps = 0
@@ -267,16 +267,18 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            next_states, rewards, dones, next_states = [], [], [], []
+            next_states, rewards, dones, real_dones = [], [], [], []
             for parent_conn in parent_conns:
-                s, r, d, _ = parent_conn.recv()
+                s, r, d, rd = parent_conn.recv()
                 next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
+                real_dones.append(rd)
 
             next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
+            real_dones = np.hstack(real_dones)
 
             total_state.append(states)
             total_next_state.append(next_states)
@@ -288,7 +290,7 @@ if __name__ == '__main__':
 
             sample_rall += rewards[sample_env_idx]
             sample_step += 1
-            if dones[sample_env_idx]:
+            if real_dones[sample_env_idx]:
                 sample_episode += 1
                 writer.add_scalar('data/reward', sample_rall, sample_episode)
                 writer.add_scalar('data/step', sample_step, sample_episode)
