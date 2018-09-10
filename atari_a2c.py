@@ -285,8 +285,8 @@ if __name__ == '__main__':
             dones = np.hstack(dones)
             real_dones = np.hstack(real_dones)
 
-            total_state.append(states)
-            total_next_state.append(next_states)
+            total_state.append(np.copy(states))
+            total_next_state.append(np.copy(next_states))
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
