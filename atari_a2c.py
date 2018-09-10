@@ -1,25 +1,31 @@
+import ray
+import gym
+import os
+import random
+from itertools import chain
+
+import numpy as np
+
+import torch.nn.functional as F
+import torch.nn as nn
+import torch
 import cv2
 
 from model import *
 
-import numpy as np
-import torch
 import torch.optim as optim
 from torch.multiprocessing import Pipe, Process
-from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
-import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
 from collections import deque
 
 from tensorboardX import SummaryWriter
 
 
-class MarioEnvironment(Process):
+class AtariEnvironment(Process):
     def __init__(self, env_id, is_render, env_idx, child_conn, history_size=4, h=84, w=84):
-        super(MarioEnvironment, self).__init__()
+        super(AtariEnvironment, self).__init__()
         self.daemon = True
-        self.env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
+        self.env = gym.make(env_id)
 
         self.is_render = is_render
         self.env_idx = env_idx
@@ -35,25 +41,27 @@ class MarioEnvironment(Process):
         self.w = w
 
         self.reset()
+        self.lives = self.env.env.ale.lives()
 
     def run(self):
-        super(MarioEnvironment, self).run()
+        super(AtariEnvironment, self).run()
         while True:
             action = self.child_conn.recv()
             if self.is_render:
                 self.env.render()
-            obs, reward, done, info = self.env.step(action)
+            _, reward, done, info = self.env.step(action)
+
+            if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
+                force_done = True
+                self.lives = info['ale.lives']
+            else:
+                force_done = done
 
             self.history[:3, :, :] = self.history[1:, :, :]
-            self.history[3, :, :] = self.pre_proc(obs)
+            self.history[3, :, :] = self.pre_proc(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
 
-            r = np.clip(reward, -1, 1)
-            self.rall += r
+            self.rall += reward
             self.steps += 1
-
-            if reward == -15:
-                done = True
-                r = -10
 
             if done:
                 self.recent_rlist.append(self.rall)
@@ -63,20 +71,19 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], r, done, info])
+            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), force_done, done])
 
     def reset(self):
         self.steps = 0
         self.episode += 1
         self.rall = 0
-        # self.env.reset()
-        self.get_init_state(self.env.reset())
+        self.env.reset()
+        self.get_init_state(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
         return self.history[:, :, :]
 
     def pre_proc(self, X):
-        x = cv2.cvtColor(X, cv2.COLOR_RGB2GRAY)
-        x = cv2.resize(x, (self.h, self.w))
-        x = np.float32(x) * (1.0 / 255.0)
+        x = cv2.resize(X, (self.h, self.w))
+        x *= (1.0 / 255.0)
 
         return x
 
@@ -157,7 +164,7 @@ class ActorAgent(object):
 
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 3)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
         self.optimizer.step()
 
 
@@ -180,7 +187,7 @@ def make_train_data(reward, done, value, next_value):
         adv = discounted_return - value
 
     else:
-        running_add = next_value[num_step] * (1 - done[num_step])
+        running_add = next_value[num_step - 1] * (1 - done[num_step - 1])
         for t in range(num_step - 1, -1, -1):
             if d[t]:
                 running_add = 0
@@ -193,15 +200,16 @@ def make_train_data(reward, done, value, next_value):
         # For Actor
         adv = discounted_return - value
 
+    adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+
     return target, adv
 
 
 if __name__ == '__main__':
-    env_id = 'SuperMarioBros-v2'
-    env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
+    env_id = 'BreakoutDeterministic-v4'
+    env = gym.make(env_id)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
-    print(output_size)
 
     env.close()
 
@@ -222,20 +230,19 @@ if __name__ == '__main__':
     entropy = 0.02
     alpha = 0.99
     gamma = 0.99
-    max_step = 1.15e+10
+    clip_grad_norm = 3.0
+
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
     if is_load_model:
         agent.model.load_state_dict(torch.load(model_path))
-
-
 
     works = []
     parent_conns = []
     child_conns = []
     for idx in range(num_worker):
         parent_conn, child_conn = Pipe()
-        work = MarioEnvironment(env_id, is_render, idx, child_conn)
+        work = AtariEnvironment(env_id, is_render, idx, child_conn)
         work.start()
         works.append(work)
         parent_conns.append(parent_conn)
@@ -260,16 +267,18 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            next_states, rewards, dones = [], [], []
+            next_states, rewards, dones, real_dones = [], [], [], []
             for parent_conn in parent_conns:
-                s, r, d, _ = parent_conn.recv()
+                s, r, d, rd = parent_conn.recv()
                 next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
+                real_dones.append(rd)
 
             next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
+            real_dones = np.hstack(real_dones)
 
             total_state.append(states)
             total_next_state.append(next_states)
@@ -281,7 +290,7 @@ if __name__ == '__main__':
 
             sample_rall += rewards[sample_env_idx]
             sample_step += 1
-            if dones[sample_env_idx]:
+            if real_dones[sample_env_idx]:
                 sample_episode += 1
                 writer.add_scalar('data/reward', sample_rall, sample_episode)
                 writer.add_scalar('data/step', sample_step, sample_episode)
