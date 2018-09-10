@@ -102,8 +102,8 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        # self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
+        # self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
@@ -190,7 +190,7 @@ def make_train_data(reward, done, value, next_value):
     else:
         running_add = next_value[num_step - 1] * (1 - done[num_step - 1])
         for t in range(num_step - 1, -1, -1):
-            if d[t]:
+            if done[t]:
                 running_add = 0
             running_add = reward[t] + gamma * running_add
             discounted_return[t] = running_add
@@ -217,7 +217,7 @@ if __name__ == '__main__':
 
     writer = SummaryWriter()
     use_cuda = True
-    use_gae = True
+    use_gae = False
     is_load_model = False
     is_render = False
     use_standardization = False
@@ -225,17 +225,17 @@ if __name__ == '__main__':
     model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
-    num_worker = 16
+    num_worker = 32
     num_worker_per_env = 1
     num_step = 5
-    max_step = 50000
-    # learning_rate = 0.0007 * num_worker
-    learning_rate = 0.00025
+    max_step = 1.15e8
+    learning_rate = 0.0007 * num_worker
+    # learning_rate = 0.00025
     epslion = 0.1
-    entropy = 0.02
+    entropy = 0.01
     alpha = 0.99
     gamma = 0.99
-    clip_grad_norm = 3.0
+    clip_grad_norm = 40.0
 
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
@@ -264,7 +264,7 @@ if __name__ == '__main__':
 
     while True:
         total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
-        global_step += 1
+        global_step += (num_worker * num_step)
 
         for _ in range(num_step):
             actions = agent.get_action(states)
@@ -285,8 +285,8 @@ if __name__ == '__main__':
             dones = np.hstack(dones)
             real_dones = np.hstack(real_dones)
 
-            total_state.append(np.copy(states))
-            total_next_state.append(np.copy(next_states))
+            total_state.append(states)
+            total_next_state.append(next_states)
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
@@ -327,10 +327,12 @@ if __name__ == '__main__':
             total_adv.append(adv)
 
         agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+
         # adjust learning rate
         new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
         for param_group in agent.optimizer.param_groups:
             param_group['lr'] = new_learing_rate
+            writer.add_scalar('data/lr', new_learing_rate, sample_episode)
 
-        if global_step % 10000 == 0:
+        if global_step % (num_worker * num_step * 100) == 0:
             torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))
