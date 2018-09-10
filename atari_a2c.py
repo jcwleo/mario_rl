@@ -161,7 +161,7 @@ class ActorAgent(object):
         critic_loss = mse(value.sum(1), target_batch)
 
         # Total loss
-        loss = actor_loss.mean() + 0.5 * critic_loss - 0.02 * entropy.mean()
+        loss = actor_loss.mean() + 0.5 * critic_loss - entropy_coef * entropy.mean()
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -232,7 +232,7 @@ if __name__ == '__main__':
     learning_rate = 0.0007 * num_worker
     # learning_rate = 0.00025
     epslion = 0.1
-    entropy = 0.01
+    entropy_coef = 0.01
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 40.0
