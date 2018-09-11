@@ -109,10 +109,8 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        if is_adam:
-            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        else:
-            self.optimizer = optim.RMSprop(self.model.parameters(), lr=rmsp_learning_rate, eps=epslion, alpha=alpha)
+
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -228,7 +226,6 @@ if __name__ == '__main__':
     is_render = False
     use_standardization = False
     lr_schedule = False
-    is_adam = False
     life_done = True
 
     model_path = 'models/{}.model'.format(env_id)
