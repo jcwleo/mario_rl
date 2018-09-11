@@ -26,7 +26,7 @@ class AtariEnvironment(Process):
         super(AtariEnvironment, self).__init__()
         self.daemon = True
         self.env = gym.make(env_id)
-
+        self.env_id = env_id
         self.is_render = is_render
         self.env_idx = env_idx
         self.steps = 0
@@ -49,6 +49,10 @@ class AtariEnvironment(Process):
             action = self.child_conn.recv()
             if self.is_render:
                 self.env.render()
+
+            if 'Breakout' in self.env_id:
+                action += 1
+
             _, reward, done, info = self.env.step(action)
 
             if life_done:
@@ -211,6 +215,9 @@ if __name__ == '__main__':
     env = gym.make(env_id)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
+
+    if 'Breakout' in env_id:
+        output_size -= 1
 
     env.close()
 
