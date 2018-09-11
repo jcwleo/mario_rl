@@ -106,9 +106,9 @@ class ActorAgent(object):
         self.lam = lam
         self.use_gae = use_gae
         if is_adam:
-            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, betas=(beta1, beta2), eps=epslion)
+            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         else:
-            self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
+            self.optimizer = optim.RMSprop(self.model.parameters(), lr=rmsp_learning_rate, eps=epslion, alpha=alpha)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -187,6 +187,8 @@ def make_train_data(reward, done, value, next_value):
 
             discounted_return[t] = gae + value[t]
 
+        target = reward + gamma * (1 - done) * next_value
+
         # For Actor
         adv = discounted_return - value
 
@@ -195,6 +197,8 @@ def make_train_data(reward, done, value, next_value):
             running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
             discounted_return[t] = running_add
 
+        target = reward + gamma * (1 - done) * next_value
+
         # For Actor
         adv = discounted_return - value
 
@@ -202,7 +206,7 @@ def make_train_data(reward, done, value, next_value):
         adv = (adv - np.mean(adv)) / (np.std(adv) + stable_eps)
         discounted_return = (discounted_return - np.mean(discounted_return)) / (np.std(discounted_return) + stable_eps)
 
-    return discounted_return, adv
+    return target, adv
 
 
 if __name__ == '__main__':
@@ -221,26 +225,24 @@ if __name__ == '__main__':
     use_standardization = False
     lr_schedule = False
     is_adam = False
-    life_done = False
+    life_done = True
 
     model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
-    num_worker = 32
+    num_worker = 16
     num_worker_per_env = 1
     num_step = 5
     max_step = 1.15e8
-    # learning_rate = 0.0007 * num_worker
-    learning_rate = 0.00224
-    beta1 = 0.9
-    beta2 = 0.999
+    rmsp_learning_rate = 0.0007 * num_worker
+    learning_rate = 0.00025
 
     stable_eps = 1e-30
     epslion = 0.1
     entropy_coef = 0.01
     alpha = 0.99
     gamma = 0.99
-    clip_grad_norm = 40.0
+    clip_grad_norm = 3.0
 
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
