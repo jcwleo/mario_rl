@@ -51,9 +51,12 @@ class AtariEnvironment(Process):
                 self.env.render()
             _, reward, done, info = self.env.step(action)
 
-            if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
-                force_done = True
-                self.lives = info['ale.lives']
+            if life_done:
+                if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
+                    force_done = True
+                    self.lives = info['ale.lives']
+                else:
+                    force_done = done
             else:
                 force_done = done
 
@@ -102,8 +105,11 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        # self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        if is_adam:
+            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, betas=(beta1, beta2), eps=epslion)
+        else:
+            self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
+
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
@@ -181,9 +187,6 @@ def make_train_data(reward, done, value, next_value):
 
             discounted_return[t] = gae + value[t]
 
-        # For critic
-        target = reward + gamma * (1 - done) * next_value
-
         # For Actor
         adv = discounted_return - value
 
@@ -191,16 +194,15 @@ def make_train_data(reward, done, value, next_value):
         for t in range(num_step - 1, -1, -1):
             running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
             discounted_return[t] = running_add
-        # For critic
-        target = reward + gamma * (1 - done) * next_value
 
         # For Actor
         adv = discounted_return - value
 
     if use_standardization:
-        adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+        adv = (adv - np.mean(adv)) / (np.std(adv) + stable_eps)
+        discounted_return = (discounted_return - np.mean(discounted_return)) / (np.std(discounted_return) + stable_eps)
 
-    return target, adv
+    return discounted_return, adv
 
 
 if __name__ == '__main__':
@@ -217,6 +219,9 @@ if __name__ == '__main__':
     is_load_model = False
     is_render = False
     use_standardization = False
+    lr_schedule = False
+    is_adam = False
+    life_done = False
 
     model_path = 'models/{}.model'.format(env_id)
 
@@ -226,12 +231,16 @@ if __name__ == '__main__':
     num_step = 5
     max_step = 1.15e8
     # learning_rate = 0.0007 * num_worker
-    learning_rate = 0.00025
+    learning_rate = 0.00224
+    beta1 = 0.9
+    beta2 = 0.999
+
+    stable_eps = 1e-30
     epslion = 0.1
     entropy_coef = 0.01
     alpha = 0.99
     gamma = 0.99
-    clip_grad_norm = 3.0
+    clip_grad_norm = 40.0
 
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
@@ -256,7 +265,7 @@ if __name__ == '__main__':
     sample_step = 0
     sample_env_idx = 0
     global_step = 0
-    recent_prob = deque(maxlen=100)
+    recent_prob = deque(maxlen=10)
 
     while True:
         total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
@@ -325,10 +334,11 @@ if __name__ == '__main__':
         agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
 
         # adjust learning rate
-        new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
-        for param_group in agent.optimizer.param_groups:
-            param_group['lr'] = new_learing_rate
-            writer.add_scalar('data/lr', new_learing_rate, sample_episode)
+        if lr_schedule:
+            new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
+            for param_group in agent.optimizer.param_groups:
+                param_group['lr'] = new_learing_rate
+                writer.add_scalar('data/lr', new_learing_rate, sample_episode)
 
         if global_step % (num_worker * num_step * 100) == 0:
             torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))
