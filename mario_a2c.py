@@ -231,7 +231,7 @@ if __name__ == '__main__':
 
     stable_eps = 1e-30
     epslion = 0.1
-    entropy_coef = 0.1
+    entropy_coef = 0.05
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 3.0
