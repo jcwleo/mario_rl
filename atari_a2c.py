@@ -177,6 +177,8 @@ class ActorAgent(object):
 
 def make_train_data(reward, done, value, next_value):
     discounted_return = np.empty([num_step])
+    if use_standardization:
+        reward = (reward - np.mean(reward)) / (np.std(reward) + stable_eps)
 
     # Discounted Return
     if use_gae:
@@ -187,8 +189,6 @@ def make_train_data(reward, done, value, next_value):
 
             discounted_return[t] = gae + value[t]
 
-        target = reward + gamma * (1 - done) * next_value
-
         # For Actor
         adv = discounted_return - value
 
@@ -197,16 +197,13 @@ def make_train_data(reward, done, value, next_value):
             running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
             discounted_return[t] = running_add
 
-        target = reward + gamma * (1 - done) * next_value
-
         # For Actor
         adv = discounted_return - value
 
     if use_standardization:
         adv = (adv - np.mean(adv)) / (np.std(adv) + stable_eps)
-        discounted_return = (discounted_return - np.mean(discounted_return)) / (np.std(discounted_return) + stable_eps)
 
-    return target, adv
+    return discounted_return, adv
 
 
 if __name__ == '__main__':
@@ -234,7 +231,7 @@ if __name__ == '__main__':
     num_worker_per_env = 1
     num_step = 5
     max_step = 1.15e8
-    rmsp_learning_rate = 0.0007 * num_worker
+
     learning_rate = 0.00025
 
     stable_eps = 1e-30
