@@ -346,4 +346,4 @@ if __name__ == '__main__':
                 writer.add_scalar('data/lr', new_learing_rate, sample_episode)
 
         if global_step % (num_worker * num_step * 100) == 0:
-            torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))
+            torch.save(agent.model.state_dict(), model_path)

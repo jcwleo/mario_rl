@@ -56,7 +56,7 @@ class MarioEnvironment(Process):
             r = np.clip(reward, -1, 1)
             if reward == -15:
                 done = True
-                r = -10
+                r = -1
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
@@ -103,7 +103,7 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -213,8 +213,8 @@ if __name__ == '__main__':
     use_cuda = True
     use_gae = False
     is_load_model = False
-    is_render = True
-    use_standardization = True
+    is_render = False
+    use_standardization = False
     lr_schedule = False
     is_adam = False
     life_done = True
@@ -224,7 +224,7 @@ if __name__ == '__main__':
     lam = 0.95
     num_worker = 16
     num_worker_per_env = 1
-    num_step = 5
+    num_step = 16
     max_step = 1.15e8
 
     learning_rate = 0.00025
@@ -234,7 +234,7 @@ if __name__ == '__main__':
     entropy_coef = 0.05
     alpha = 0.99
     gamma = 0.99
-    clip_grad_norm = 3.0
+    clip_grad_norm = 0.5
 
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
@@ -335,4 +335,4 @@ if __name__ == '__main__':
                 writer.add_scalar('data/lr', new_learing_rate, sample_episode)
 
         if global_step % (num_worker * num_step * 100) == 0:
-            torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))
+            torch.save(agent.model.state_dict(), model_path)
