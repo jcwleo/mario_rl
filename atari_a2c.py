@@ -247,7 +247,8 @@ if __name__ == '__main__':
     gamma = 0.99
     clip_grad_norm = 3.0
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
+    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda,
+                       use_noisy_net=use_noisy_net)
 
     if is_load_model:
         agent.model.load_state_dict(torch.load(model_path))
