@@ -100,8 +100,9 @@ class AtariEnvironment(Process):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False):
-        self.model = CnnActorCriticNetwork(input_size, output_size)
+    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
+                 use_noisy_net=False):
+        self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -227,6 +228,7 @@ if __name__ == '__main__':
     use_standardization = False
     lr_schedule = False
     life_done = True
+    use_noisy_net = False
 
     model_path = 'models/{}.model'.format(env_id)
 
