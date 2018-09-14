@@ -1,18 +1,27 @@
+import ray
+import gym
+import os
+import random
+from itertools import chain
+
+import numpy as np
+
+import torch.nn.functional as F
+import torch.nn as nn
+import torch
 import cv2
 
 from model import *
 
-import numpy as np
-import torch
 import torch.optim as optim
 from torch.multiprocessing import Pipe, Process
-from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
-import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
 from collections import deque
 
 from tensorboardX import SummaryWriter
+import gym_super_mario_bros
+from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
 
 class MarioEnvironment(Process):
@@ -44,16 +53,16 @@ class MarioEnvironment(Process):
                 self.env.render()
             obs, reward, done, info = self.env.step(action)
 
-            self.history[:3, :, :] = self.history[1:, :, :]
-            self.history[3, :, :] = self.pre_proc(obs)
-
             r = np.clip(reward, -1, 1)
-            self.rall += r
-            self.steps += 1
-
             if reward == -15:
                 done = True
                 r = -10
+
+            self.history[:3, :, :] = self.history[1:, :, :]
+            self.history[3, :, :] = self.pre_proc(obs)
+
+            self.rall += reward
+            self.steps += 1
 
             if done:
                 self.recent_rlist.append(self.rall)
@@ -63,13 +72,12 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], r, done, info])
+            self.child_conn.send([self.history[:, :, :], r, done, done])
 
     def reset(self):
         self.steps = 0
         self.episode += 1
         self.rall = 0
-        # self.env.reset()
         self.get_init_state(self.env.reset())
         return self.history[:, :, :]
 
@@ -95,7 +103,8 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
@@ -153,16 +162,18 @@ class ActorAgent(object):
         critic_loss = mse(value.sum(1), target_batch)
 
         # Total loss
-        loss = actor_loss.mean() + 0.5 * critic_loss - 0.01 * entropy.mean()
+        loss = actor_loss.mean() + 0.5 * critic_loss - entropy_coef * entropy.mean()
 
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 3)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
         self.optimizer.step()
 
 
 def make_train_data(reward, done, value, next_value):
     discounted_return = np.empty([num_step])
+    if use_standardization:
+        reward = (reward - np.mean(reward)) / (np.std(reward) + stable_eps)
 
     # Discounted Return
     if use_gae:
@@ -173,27 +184,21 @@ def make_train_data(reward, done, value, next_value):
 
             discounted_return[t] = gae + value[t]
 
-        # For critic
-        target = reward + gamma * (1 - done) * next_value
-
         # For Actor
         adv = discounted_return - value
 
     else:
-        running_add = next_value[num_step] * (1 - done[num_step])
         for t in range(num_step - 1, -1, -1):
-            if d[t]:
-                running_add = 0
-            running_add = reward[t] + gamma * running_add
+            running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
             discounted_return[t] = running_add
-
-        # For critic
-        target = r + gamma * (1 - done) * next_value
 
         # For Actor
         adv = discounted_return - value
 
-    return target, adv
+    if use_standardization:
+        adv = (adv - np.mean(adv)) / (np.std(adv) + stable_eps)
+
+    return discounted_return, adv
 
 
 if __name__ == '__main__':
@@ -201,15 +206,18 @@ if __name__ == '__main__':
     env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
-    print(output_size)
 
     env.close()
 
     writer = SummaryWriter()
     use_cuda = True
-    use_gae = True
+    use_gae = False
     is_load_model = False
-    is_render = False
+    is_render = True
+    use_standardization = True
+    lr_schedule = False
+    is_adam = False
+    life_done = True
 
     model_path = 'models/{}.model'.format(env_id)
 
@@ -217,18 +225,21 @@ if __name__ == '__main__':
     num_worker = 16
     num_worker_per_env = 1
     num_step = 5
-    learning_rate = 0.0007 * num_worker
+    max_step = 1.15e8
+
+    learning_rate = 0.00025
+
+    stable_eps = 1e-30
     epslion = 0.1
-    entropy = 0.02
+    entropy_coef = 0.05
     alpha = 0.99
     gamma = 0.99
-    max_step = 1.15e+10
+    clip_grad_norm = 3.0
+
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
 
     if is_load_model:
         agent.model.load_state_dict(torch.load(model_path))
-
-
 
     works = []
     parent_conns = []
@@ -247,12 +258,12 @@ if __name__ == '__main__':
     sample_rall = 0
     sample_step = 0
     sample_env_idx = 0
-    total_step = 0
-    recent_prob = deque(maxlen=100)
+    global_step = 0
+    recent_prob = deque(maxlen=10)
 
     while True:
         total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
-        total_step += (num_worker * num_step)
+        global_step += (num_worker * num_step)
 
         for _ in range(num_step):
             actions = agent.get_action(states)
@@ -260,16 +271,18 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            next_states, rewards, dones = [], [], []
+            next_states, rewards, dones, real_dones = [], [], [], []
             for parent_conn in parent_conns:
-                s, r, d, _ = parent_conn.recv()
+                s, r, d, rd = parent_conn.recv()
                 next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
+                real_dones.append(rd)
 
             next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
+            real_dones = np.hstack(real_dones)
 
             total_state.append(states)
             total_next_state.append(next_states)
@@ -281,7 +294,7 @@ if __name__ == '__main__':
 
             sample_rall += rewards[sample_env_idx]
             sample_step += 1
-            if dones[sample_env_idx]:
+            if real_dones[sample_env_idx]:
                 sample_episode += 1
                 writer.add_scalar('data/reward', sample_rall, sample_episode)
                 writer.add_scalar('data/step', sample_step, sample_episode)
@@ -314,5 +327,12 @@ if __name__ == '__main__':
 
         agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
 
-        if total_step % 40000 == 0:
+        # adjust learning rate
+        if lr_schedule:
+            new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
+            for param_group in agent.optimizer.param_groups:
+                param_group['lr'] = new_learing_rate
+                writer.add_scalar('data/lr', new_learing_rate, sample_episode)
+
+        if global_step % (num_worker * num_step * 100) == 0:
             torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))

@@ -26,7 +26,7 @@ class AtariEnvironment(Process):
         super(AtariEnvironment, self).__init__()
         self.daemon = True
         self.env = gym.make(env_id)
-
+        self.env_id = env_id
         self.is_render = is_render
         self.env_idx = env_idx
         self.steps = 0
@@ -49,11 +49,18 @@ class AtariEnvironment(Process):
             action = self.child_conn.recv()
             if self.is_render:
                 self.env.render()
+
+            if 'Breakout' in self.env_id:
+                action += 1
+
             _, reward, done, info = self.env.step(action)
 
-            if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
-                force_done = True
-                self.lives = info['ale.lives']
+            if life_done:
+                if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
+                    force_done = True
+                    self.lives = info['ale.lives']
+                else:
+                    force_done = done
             else:
                 force_done = done
 
@@ -71,7 +78,7 @@ class AtariEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], np.clip(reward, -1, 1), force_done, done])
+            self.child_conn.send([self.history[:, :, :], reward, force_done, done])
 
     def reset(self):
         self.steps = 0
@@ -102,7 +109,9 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=epslion, alpha=alpha)
+
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
@@ -160,7 +169,7 @@ class ActorAgent(object):
         critic_loss = mse(value.sum(1), target_batch)
 
         # Total loss
-        loss = actor_loss.mean() + 0.5 * critic_loss - 0.01 * entropy.mean()
+        loss = actor_loss.mean() + 0.5 * critic_loss - entropy_coef * entropy.mean()
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -170,6 +179,8 @@ class ActorAgent(object):
 
 def make_train_data(reward, done, value, next_value):
     discounted_return = np.empty([num_step])
+    if use_standardization:
+        reward = (reward - np.mean(reward)) / (np.std(reward) + stable_eps)
 
     # Discounted Return
     if use_gae:
@@ -180,29 +191,21 @@ def make_train_data(reward, done, value, next_value):
 
             discounted_return[t] = gae + value[t]
 
-        # For critic
-        target = reward + gamma * (1 - done) * next_value
-
         # For Actor
         adv = discounted_return - value
 
     else:
-        running_add = next_value[num_step - 1] * (1 - done[num_step - 1])
         for t in range(num_step - 1, -1, -1):
-            if d[t]:
-                running_add = 0
-            running_add = reward[t] + gamma * running_add
+            running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
             discounted_return[t] = running_add
-
-        # For critic
-        target = r + gamma * (1 - done) * next_value
 
         # For Actor
         adv = discounted_return - value
 
-    adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+    if use_standardization:
+        adv = (adv - np.mean(adv)) / (np.std(adv) + stable_eps)
 
-    return target, adv
+    return discounted_return, adv
 
 
 if __name__ == '__main__':
@@ -211,13 +214,19 @@ if __name__ == '__main__':
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
 
+    if 'Breakout' in env_id:
+        output_size -= 1
+
     env.close()
 
     writer = SummaryWriter()
     use_cuda = True
-    use_gae = True
+    use_gae = False
     is_load_model = False
     is_render = False
+    use_standardization = False
+    lr_schedule = False
+    life_done = True
 
     model_path = 'models/{}.model'.format(env_id)
 
@@ -225,9 +234,13 @@ if __name__ == '__main__':
     num_worker = 16
     num_worker_per_env = 1
     num_step = 5
-    learning_rate = 0.0007 * num_worker
+    max_step = 1.15e8
+
+    learning_rate = 0.00025
+
+    stable_eps = 1e-30
     epslion = 0.1
-    entropy = 0.02
+    entropy_coef = 0.01
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 3.0
@@ -254,12 +267,12 @@ if __name__ == '__main__':
     sample_rall = 0
     sample_step = 0
     sample_env_idx = 0
-    total_step = 0
-    recent_prob = deque(maxlen=100)
+    global_step = 0
+    recent_prob = deque(maxlen=10)
 
     while True:
         total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
-        total_step += (num_worker * num_step)
+        global_step += (num_worker * num_step)
 
         for _ in range(num_step):
             actions = agent.get_action(states)
@@ -299,7 +312,7 @@ if __name__ == '__main__':
 
         total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
         total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_reward = np.stack(total_reward).transpose().reshape([-1])
+        total_reward = np.stack(total_reward).transpose().reshape([-1]).clip(-1, 1)
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose().reshape([-1])
 
@@ -323,5 +336,12 @@ if __name__ == '__main__':
 
         agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
 
-        if total_step % 40000 == 0:
+        # adjust learning rate
+        if lr_schedule:
+            new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
+            for param_group in agent.optimizer.param_groups:
+                param_group['lr'] = new_learing_rate
+                writer.add_scalar('data/lr', new_learing_rate, sample_episode)
+
+        if global_step % (num_worker * num_step * 100) == 0:
             torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))
