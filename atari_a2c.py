@@ -100,8 +100,9 @@ class AtariEnvironment(Process):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False):
-        self.model = CnnActorCriticNetwork(input_size, output_size)
+    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
+                 use_noisy_net=False):
+        self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -227,6 +228,7 @@ if __name__ == '__main__':
     use_standardization = False
     lr_schedule = False
     life_done = True
+    use_noisy_net = False
 
     model_path = 'models/{}.model'.format(env_id)
 
@@ -245,7 +247,8 @@ if __name__ == '__main__':
     gamma = 0.99
     clip_grad_norm = 3.0
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
+    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda,
+                       use_noisy_net=use_noisy_net)
 
     if is_load_model:
         agent.model.load_state_dict(torch.load(model_path))
@@ -344,4 +347,4 @@ if __name__ == '__main__':
                 writer.add_scalar('data/lr', new_learing_rate, sample_episode)
 
         if global_step % (num_worker * num_step * 100) == 0:
-            torch.save(agent.model.state_dict(), 'models/{}.model'.format(env_id))
+            torch.save(agent.model.state_dict(), model_path)
