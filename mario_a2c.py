@@ -53,11 +53,10 @@ class MarioEnvironment(Process):
                 self.env.render()
             obs, reward, done, info = self.env.step(action)
 
-            r = np.clip(reward, -1, 1)
-            if reward == -15:
+            if info.get('life') < 3:
                 done = True
-                r = -1
 
+            reward = reward / 15
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
 
@@ -72,7 +71,7 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], r, done, done])
+            self.child_conn.send([self.history[:, :, :], reward, done, done])
 
     def reset(self):
         self.steps = 0
@@ -94,8 +93,8 @@ class MarioEnvironment(Process):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False):
-        self.model = CnnActorCriticNetwork(input_size, output_size)
+    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False, use_noisy_net=True):
+        self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -103,7 +102,7 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -211,18 +210,19 @@ if __name__ == '__main__':
 
     writer = SummaryWriter()
     use_cuda = True
-    use_gae = False
+    use_gae = True
     is_load_model = False
     is_render = False
     use_standardization = False
     lr_schedule = False
     is_adam = False
     life_done = True
+    use_noisy_net = True
 
     model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
-    num_worker = 16
+    num_worker = 32
     num_worker_per_env = 1
     num_step = 16
     max_step = 1.15e8
@@ -231,12 +231,12 @@ if __name__ == '__main__':
 
     stable_eps = 1e-30
     epslion = 0.1
-    entropy_coef = 0.05
+    entropy_coef = 0.01
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 0.5
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda)
+    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda, use_noisy_net=use_noisy_net)
 
     if is_load_model:
         agent.model.load_state_dict(torch.load(model_path))
