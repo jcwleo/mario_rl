@@ -124,6 +124,7 @@ class CnnActorCriticNetwork(nn.Module):
             nn.ReLU(),
             Flatten(),
             linear(7 * 7 * 64, 512),
+            nn.ReLU()
         )
         self.actor = linear(512, output_size)
         self.critic = linear(512, 1)
