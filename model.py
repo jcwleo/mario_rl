@@ -110,6 +110,7 @@ class CnnActorCriticNetwork(nn.Module):
         super(CnnActorCriticNetwork, self).__init__()
 
         if use_noisy_net:
+            print('use NoisyNet')
             linear = NoisyLinear
         else:
             linear = nn.Linear
