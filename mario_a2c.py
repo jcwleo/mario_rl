@@ -211,18 +211,18 @@ if __name__ == '__main__':
     writer = SummaryWriter()
     use_cuda = True
     use_gae = True
-    is_load_model = False
+
+    is_load_model = True
+    is_training = True
+
     is_render = False
     use_standardization = False
-    lr_schedule = False
-    is_adam = False
-    life_done = True
     use_noisy_net = True
 
     model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
-    num_worker = 32
+    num_worker = 16
     num_worker_per_env = 1
     num_step = 16
     max_step = 1.15e8
@@ -239,7 +239,10 @@ if __name__ == '__main__':
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda, use_noisy_net=use_noisy_net)
 
     if is_load_model:
-        agent.model.load_state_dict(torch.load(model_path))
+        agent.model.load_state_dict(torch.load(model_path+'.old'))
+    
+    if not is_training:
+        agent.model.eval()
 
     works = []
     parent_conns = []
@@ -301,38 +304,38 @@ if __name__ == '__main__':
                 sample_rall = 0
                 sample_step = 0
 
-        total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_reward = np.stack(total_reward).transpose().reshape([-1])
-        total_action = np.stack(total_action).transpose().reshape([-1])
-        total_done = np.stack(total_done).transpose().reshape([-1])
+        if is_training:
+            total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+            total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+            total_reward = np.stack(total_reward).transpose().reshape([-1])
+            total_action = np.stack(total_action).transpose().reshape([-1])
+            total_done = np.stack(total_done).transpose().reshape([-1])
 
-        value, next_value, policy = agent.forward_transition(total_state, total_next_state)
+            value, next_value, policy = agent.forward_transition(total_state, total_next_state)
 
-        policy = policy.detach()
-        m = F.softmax(policy, dim=-1)
-        recent_prob.append(m.max(1)[0].mean().cpu().numpy())
-        writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
+            policy = policy.detach()
+            m = F.softmax(policy, dim=-1)
+            recent_prob.append(m.max(1)[0].mean().cpu().numpy())
+            writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
 
-        total_target = []
-        total_adv = []
-        for idx in range(num_worker):
-            target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
-                                          total_done[idx * num_step:(idx + 1) * num_step],
-                                          value[idx * num_step:(idx + 1) * num_step],
-                                          next_value[idx * num_step:(idx + 1) * num_step])
-            # print(target.shape)
-            total_target.append(target)
-            total_adv.append(adv)
+            total_target = []
+            total_adv = []
+            for idx in range(num_worker):
+                target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
+                                              total_done[idx * num_step:(idx + 1) * num_step],
+                                              value[idx * num_step:(idx + 1) * num_step],
+                                              next_value[idx * num_step:(idx + 1) * num_step])
+                total_target.append(target)
+                total_adv.append(adv)
 
-        agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+            agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
 
-        # adjust learning rate
-        if lr_schedule:
-            new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
-            for param_group in agent.optimizer.param_groups:
-                param_group['lr'] = new_learing_rate
-                writer.add_scalar('data/lr', new_learing_rate, sample_episode)
+            # adjust learning rate
+            if lr_schedule:
+                new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
+                for param_group in agent.optimizer.param_groups:
+                    param_group['lr'] = new_learing_rate
+                    writer.add_scalar('data/lr', new_learing_rate, sample_episode)
 
-        if global_step % (num_worker * num_step * 100) == 0:
-            torch.save(agent.model.state_dict(), model_path)
+            if global_step % (num_worker * num_step * 100) == 0:
+                torch.save(agent.model.state_dict(), model_path)
