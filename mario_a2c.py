@@ -228,6 +228,7 @@ if __name__ == '__main__':
     max_step = 1.15e8
 
     learning_rate = 0.00025
+    lr_schedule = False
 
     stable_eps = 1e-30
     epslion = 0.1
