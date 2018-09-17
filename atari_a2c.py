@@ -85,6 +85,7 @@ class AtariEnvironment(Process):
         self.episode += 1
         self.rall = 0
         self.env.reset()
+        self.lives = self.env.env.ale.lives()
         self.get_init_state(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
         return self.history[:, :, :]
 

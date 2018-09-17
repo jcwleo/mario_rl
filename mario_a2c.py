@@ -10,6 +10,8 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 import cv2
+import time
+import datetime
 
 from model import *
 
@@ -53,8 +55,14 @@ class MarioEnvironment(Process):
                 self.env.render()
             obs, reward, done, info = self.env.step(action)
 
-            if info.get('life') < 3:
-                done = True
+            if life_done:
+                if self.lives > info['life'] and info['life'] > 0:
+                    force_done = True
+                    self.lives = info['life']
+                else:
+                    force_done = done
+            else:
+                force_done = done
 
             reward = reward / 15
             self.history[:3, :, :] = self.history[1:, :, :]
@@ -71,12 +79,13 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], reward, done, done])
+            self.child_conn.send([self.history[:, :, :], reward, force_done, done])
 
     def reset(self):
         self.steps = 0
         self.episode += 1
         self.rall = 0
+        self.lives = 3
         self.get_init_state(self.env.reset())
         return self.history[:, :, :]
 
@@ -211,6 +220,7 @@ if __name__ == '__main__':
     writer = SummaryWriter()
     use_cuda = True
     use_gae = True
+    life_done = True
 
     is_load_model = True
     is_training = True
@@ -219,7 +229,7 @@ if __name__ == '__main__':
     use_standardization = False
     use_noisy_net = True
 
-    model_path = 'models/{}.model'.format(env_id)
+    model_path = 'models/{}_{}.model'.format(env_id, datetime.date.today().isoformat())
 
     lam = 0.95
     num_worker = 16
@@ -240,7 +250,10 @@ if __name__ == '__main__':
     agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda, use_noisy_net=use_noisy_net)
 
     if is_load_model:
-        agent.model.load_state_dict(torch.load(model_path+'.old'))
+        if use_cuda:
+            agent.model.load_state_dict(torch.load(model_path))
+        else:
+            agent.model.load_state_dict(torch.load(model_path, map_location='cpu'))
     
     if not is_training:
         agent.model.eval()
@@ -270,6 +283,8 @@ if __name__ == '__main__':
         global_step += (num_worker * num_step)
 
         for _ in range(num_step):
+            if not is_training:
+                time.sleep(0.05)
             actions = agent.get_action(states)
 
             for parent_conn, action in zip(parent_conns, actions):
