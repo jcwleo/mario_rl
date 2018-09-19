@@ -3,7 +3,7 @@
 - [x] Advantage Actor critic [[1]](#references)
 - [x] Parallel Advantage Actor critic [[2]](#references)
 - [x] Noisy Networks for Exploration [[3]](#references)
-
+- [ ] Proximal Policy Optimization Algorithms [[4]](#references) (WIP)
  
 ## 1. Setup
 ####  Requirements
@@ -38,4 +38,4 @@ References
 [1] [Actor-Critic Algorithms](https://papers.nips.cc/paper/1786-actor-critic-algorithms.pdf)    
 [2] [Efficient Parallel Methods for Deep Reinforcement Learning](https://arxiv.org/abs/1705.04862)  
 [3] [Noisy Networks for Exploration](https://arxiv.org/abs/1706.10295)  
-
+[4] [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347)  
