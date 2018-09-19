@@ -35,7 +35,7 @@ python3 mario_a2c.py
 References
 ----------
 
-[1] [Actor-Critic Algorithms](https://papers.nips.cc/paper/1786-actor-critic-algorithms.pdf)  
-[2] [Efficient Parallel Methods for Deep Reinforcement Learning](https://arxiv.org/abs/1705.04862) 
+[1] [Actor-Critic Algorithms](https://papers.nips.cc/paper/1786-actor-critic-algorithms.pdf)    
+[2] [Efficient Parallel Methods for Deep Reinforcement Learning](https://arxiv.org/abs/1705.04862)  
 [3] [Noisy Networks for Exploration](https://arxiv.org/abs/1706.10295)  
 
