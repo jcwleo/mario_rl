@@ -56,6 +56,7 @@ class MarioEnvironment(Process):
             obs, reward, done, info = self.env.step(action)
 
             if life_done:
+                # when Mario loses life, changes the state to the terminal state.
                 if self.lives > info['life'] and info['life'] > 0:
                     force_done = True
                     self.lives = info['life']
@@ -63,8 +64,10 @@ class MarioEnvironment(Process):
                     force_done = done
                     self.lives = info['life']
             else:
+                # normal terminal state
                 force_done = done
 
+            # reward range -15 ~ 15
             reward = reward / 15
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
@@ -91,7 +94,9 @@ class MarioEnvironment(Process):
         return self.history[:, :, :]
 
     def pre_proc(self, X):
+        # grayscaling
         x = cv2.cvtColor(X, cv2.COLOR_RGB2GRAY)
+        # resize
         x = cv2.resize(x, (self.h, self.w))
         x = np.float32(x) * (1.0 / 255.0)
 
@@ -235,7 +240,6 @@ if __name__ == '__main__':
 
     lam = 0.95
     num_worker = 16
-    num_worker_per_env = 1
     num_step = 16
     max_step = 1.15e8
 
@@ -248,7 +252,7 @@ if __name__ == '__main__':
     gamma = 0.99
     clip_grad_norm = 0.5
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_cuda=use_cuda, use_noisy_net=use_noisy_net)
+    agent = ActorAgent(input_size, output_size, num_worker, num_step, gamma, use_cuda=use_cuda, use_noisy_net=use_noisy_net)
 
     if is_load_model:
         if use_cuda:
@@ -270,7 +274,7 @@ if __name__ == '__main__':
         parent_conns.append(parent_conn)
         child_conns.append(child_conn)
 
-    states = np.zeros([num_worker * num_worker_per_env, 4, 84, 84])
+    states = np.zeros([num_worker, 4, 84, 84])
 
     sample_episode = 0
     sample_rall = 0
@@ -330,6 +334,7 @@ if __name__ == '__main__':
 
             value, next_value, policy = agent.forward_transition(total_state, total_next_state)
 
+            # logging utput to see how convergent it is.
             policy = policy.detach()
             m = F.softmax(policy, dim=-1)
             recent_prob.append(m.max(1)[0].mean().cpu().numpy())
