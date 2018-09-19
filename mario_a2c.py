@@ -61,6 +61,7 @@ class MarioEnvironment(Process):
                     self.lives = info['life']
                 else:
                     force_done = done
+                    self.lives = info['life']
             else:
                 force_done = done
 
@@ -222,7 +223,7 @@ if __name__ == '__main__':
     use_gae = True
     life_done = True
 
-    is_load_model = True
+    is_load_model = False
     is_training = True
 
     is_render = False
@@ -230,6 +231,7 @@ if __name__ == '__main__':
     use_noisy_net = True
 
     model_path = 'models/{}_{}.model'.format(env_id, datetime.date.today().isoformat())
+    load_model_path = 'models/SuperMarioBros-v2_2018-09-18.model'
 
     lam = 0.95
     num_worker = 16
@@ -241,8 +243,7 @@ if __name__ == '__main__':
     lr_schedule = False
 
     stable_eps = 1e-30
-    epslion = 0.1
-    entropy_coef = 0.01
+    entropy_coef = 0.02
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 0.5
@@ -251,9 +252,9 @@ if __name__ == '__main__':
 
     if is_load_model:
         if use_cuda:
-            agent.model.load_state_dict(torch.load(model_path))
+            agent.model.load_state_dict(torch.load(load_model_path))
         else:
-            agent.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+            agent.model.load_state_dict(torch.load(load_model_path, map_location='cpu'))
     
     if not is_training:
         agent.model.eval()
