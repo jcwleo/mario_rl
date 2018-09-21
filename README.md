@@ -1,4 +1,5 @@
 # Super Mario Bros RL
+![Alt text](/asset/mario.gif)
 
 - [x] Advantage Actor critic [[1]](#references)
 - [x] Parallel Advantage Actor critic [[2]](#references)
