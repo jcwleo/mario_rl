@@ -117,6 +117,8 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
+        if use_rmsp:
+            self.optimizer = optim.RMSprop(self.model.parameters(), lr=learning_rate, eps=1e-5)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
@@ -216,7 +218,7 @@ def make_train_data(reward, done, value, next_value):
 
 
 if __name__ == '__main__':
-    env_id = 'SuperMarioBros-v2'
+    env_id = 'SuperMarioBros-v0'
     env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
@@ -240,10 +242,11 @@ if __name__ == '__main__':
 
     lam = 0.95
     num_worker = 16
-    num_step = 16
+    num_step = 5
     max_step = 1.15e8
 
-    learning_rate = 0.00025
+    learning_rate = 0.0007
+    use_rmsp = True
     lr_schedule = False
 
     stable_eps = 1e-30
