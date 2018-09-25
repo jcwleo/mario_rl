@@ -1,4 +1,3 @@
-import ray
 import gym
 import os
 import random
@@ -17,6 +16,7 @@ import torch.optim as optim
 from torch.multiprocessing import Pipe, Process
 
 from collections import deque
+from sklearn.utils import shuffle
 
 from tensorboardX import SummaryWriter
 
@@ -152,6 +152,9 @@ class ActorAgent(object):
         target_batch = torch.FloatTensor(target_batch).to(self.device)
         y_batch = torch.LongTensor(y_batch).to(self.device)
         adv_batch = torch.FloatTensor(adv_batch).to(self.device)
+        
+        sample_range = np.arange(len(s_batch))
+
         if use_standardization:
             adv_batch = (adv_batch - adv_batch.mean()) / (adv_batch.std() + stable_eps)
 
@@ -162,24 +165,26 @@ class ActorAgent(object):
             log_prob_old = m_old.log_prob(y_batch)
 
         for i in range(epoch):
-            policy, value = self.model(s_batch)
-            m = Categorical(F.softmax(policy, dim=-1))
-            log_prob = m.log_prob(y_batch)
+            np.random.shuffle(sample_range)
+            for j in range(int(len(s_batch)/batch_size)):
+                sample_idx = sample_range[batch_size * j:batch_size * (j+1)]
+                policy, value = self.model(s_batch[sample_idx])
+                m = Categorical(F.softmax(policy, dim=-1))
+                log_prob = m.log_prob(y_batch[sample_idx])
 
-            minibatch = random.sample(range(len(s_batch)), batch_size)
-            ratio = torch.exp(log_prob[minibatch] - log_prob_old[minibatch])
+                ratio = torch.exp(log_prob - log_prob_old[sample_idx])
 
-            surr1 = ratio * adv_batch[minibatch]
-            surr2 = torch.clamp(ratio, 1.0 - ppo_eps, 1.0 + ppo_eps) * adv_batch[minibatch]
+                surr1 = ratio * adv_batch[sample_idx]
+                surr2 = torch.clamp(ratio, 1.0 - ppo_eps, 1.0 + ppo_eps) * adv_batch[sample_idx]
 
-            actor_loss = -torch.min(surr1, surr2).mean()
-            critic_loss = F.mse_loss(value[minibatch].sum(1), target_batch[minibatch])
+                actor_loss = -torch.min(surr1, surr2).mean()
+                critic_loss = F.mse_loss(value.sum(1), target_batch[sample_idx])
 
-            self.optimizer.zero_grad()
-            loss = actor_loss + critic_loss
-            loss.backward(retain_graph=True)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
-            self.optimizer.step()
+                self.optimizer.zero_grad()
+                loss = actor_loss + critic_loss
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
+                self.optimizer.step()
 
 
 def make_train_data(reward, done, value, next_value):
@@ -224,7 +229,7 @@ if __name__ == '__main__':
     use_gae = True
     is_load_model = False
     is_render = False
-    use_standardization = True
+    use_standardization = False
     lr_schedule = False
     life_done = True
     use_noisy_net = True
@@ -232,7 +237,7 @@ if __name__ == '__main__':
     model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
-    num_worker = 8
+    num_worker = 16
 
     num_step = 128
     ppo_eps = 0.1
@@ -240,14 +245,14 @@ if __name__ == '__main__':
     batch_size = 32 * num_worker
     max_step = 1.15e8
 
-    learning_rate = 0.00025
+    learning_rate = 0.0001
 
     stable_eps = 1e-30
     epslion = 0.1
     entropy_coef = 0.01
     alpha = 0.99
     gamma = 0.99
-    clip_grad_norm = 3.0
+    clip_grad_norm = 0.5
 
     agent = ActorAgent(input_size, output_size, num_worker, num_step, gamma, use_cuda=use_cuda,
                        use_gae=use_gae, use_noisy_net=use_noisy_net)
