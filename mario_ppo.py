@@ -1,3 +1,4 @@
+import ray
 import gym
 import os
 import random
@@ -9,6 +10,8 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 import cv2
+import time
+import datetime
 
 from model import *
 
@@ -16,17 +19,19 @@ import torch.optim as optim
 from torch.multiprocessing import Pipe, Process
 
 from collections import deque
-from sklearn.utils import shuffle
 
 from tensorboardX import SummaryWriter
+import gym_super_mario_bros
+from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
 
-class AtariEnvironment(Process):
+class MarioEnvironment(Process):
     def __init__(self, env_id, is_render, env_idx, child_conn, history_size=4, h=84, w=84):
-        super(AtariEnvironment, self).__init__()
+        super(MarioEnvironment, self).__init__()
         self.daemon = True
-        self.env = gym.make(env_id)
-        self.env_id = env_id
+        self.env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
+
         self.is_render = is_render
         self.env_idx = env_idx
         self.steps = 0
@@ -41,31 +46,31 @@ class AtariEnvironment(Process):
         self.w = w
 
         self.reset()
-        self.lives = self.env.env.ale.lives()
 
     def run(self):
-        super(AtariEnvironment, self).run()
+        super(MarioEnvironment, self).run()
         while True:
             action = self.child_conn.recv()
             if self.is_render:
                 self.env.render()
-
-            if 'Breakout' in self.env_id:
-                action += 1
-
-            _, reward, done, info = self.env.step(action)
+            obs, reward, done, info = self.env.step(action)
 
             if life_done:
-                if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
+                # when Mario loses life, changes the state to the terminal state.
+                if self.lives > info['life'] and info['life'] > 0:
                     force_done = True
-                    self.lives = info['ale.lives']
+                    self.lives = info['life']
                 else:
                     force_done = done
+                    self.lives = info['life']
             else:
+                # normal terminal state
                 force_done = done
 
+            # reward range -15 ~ 15
+            reward = reward / 15
             self.history[:3, :, :] = self.history[1:, :, :]
-            self.history[3, :, :] = self.pre_proc(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
+            self.history[3, :, :] = self.pre_proc(obs)
 
             self.rall += reward
             self.steps += 1
@@ -84,14 +89,16 @@ class AtariEnvironment(Process):
         self.steps = 0
         self.episode += 1
         self.rall = 0
-        self.env.reset()
-        self.lives = self.env.env.ale.lives()
-        self.get_init_state(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
+        self.lives = 3
+        self.get_init_state(self.env.reset())
         return self.history[:, :, :]
 
     def pre_proc(self, X):
-        x = cv2.resize(X, (self.h, self.w))
-        x *= (1.0 / 255.0)
+        # grayscaling
+        x = cv2.cvtColor(X, cv2.COLOR_RGB2GRAY)
+        # resize
+        x = cv2.resize(x, (self.h, self.w))
+        x = np.float32(x) * (1.0 / 255.0)
 
         return x
 
@@ -102,7 +109,7 @@ class AtariEnvironment(Process):
 
 class ActorAgent(object):
     def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
-                 use_noisy_net=False):
+                 use_noisy_net=True):
         self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
@@ -111,7 +118,6 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
@@ -214,58 +220,63 @@ def make_train_data(reward, done, value, next_value):
 
 
 if __name__ == '__main__':
-    env_id = 'BreakoutDeterministic-v4'
-    env = gym.make(env_id)
+    env_id = 'SuperMarioBros-v0'
+    env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
-
-    if 'Breakout' in env_id:
-        output_size -= 1
 
     env.close()
 
     writer = SummaryWriter()
     use_cuda = True
     use_gae = True
+    life_done = True
+
     is_load_model = False
+    is_training = True
+
     is_render = False
     use_standardization = False
-    lr_schedule = False
-    life_done = True
     use_noisy_net = True
 
-    model_path = 'models/{}.model'.format(env_id)
+    model_path = 'models/{}_{}.model'.format(env_id, datetime.date.today().isoformat())
+    load_model_path = 'models/SuperMarioBros-v2_2018-09-18.model'
 
     lam = 0.95
-    num_worker = 16
-
+    num_worker = 8
     num_step = 128
     ppo_eps = 0.1
     epoch = 3
     batch_size = 32 * num_worker
     max_step = 1.15e8
 
-    learning_rate = 0.0001
+    learning_rate = 0.00025
+    lr_schedule = False
 
     stable_eps = 1e-30
-    epslion = 0.1
-    entropy_coef = 0.01
+    entropy_coef = 0.02
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 0.5
 
     agent = ActorAgent(input_size, output_size, num_worker, num_step, gamma, use_cuda=use_cuda,
-                       use_gae=use_gae, use_noisy_net=use_noisy_net)
+                       use_noisy_net=use_noisy_net)
 
     if is_load_model:
-        agent.model.load_state_dict(torch.load(model_path))
+        if use_cuda:
+            agent.model.load_state_dict(torch.load(load_model_path))
+        else:
+            agent.model.load_state_dict(torch.load(load_model_path, map_location='cpu'))
+
+    if not is_training:
+        agent.model.eval()
 
     works = []
     parent_conns = []
     child_conns = []
     for idx in range(num_worker):
         parent_conn, child_conn = Pipe()
-        work = AtariEnvironment(env_id, is_render, idx, child_conn)
+        work = MarioEnvironment(env_id, is_render, idx, child_conn)
         work.start()
         works.append(work)
         parent_conns.append(parent_conn)
@@ -285,6 +296,8 @@ if __name__ == '__main__':
         global_step += (num_worker * num_step)
 
         for _ in range(num_step):
+            if not is_training:
+                time.sleep(0.05)
             actions = agent.get_action(states)
 
             for parent_conn, action in zip(parent_conns, actions):
@@ -320,38 +333,39 @@ if __name__ == '__main__':
                 sample_rall = 0
                 sample_step = 0
 
-        total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_reward = np.stack(total_reward).transpose().reshape([-1])
-        total_action = np.stack(total_action).transpose().reshape([-1])
-        total_done = np.stack(total_done).transpose().reshape([-1])
+        if is_training:
+            total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+            total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+            total_reward = np.stack(total_reward).transpose().reshape([-1])
+            total_action = np.stack(total_action).transpose().reshape([-1])
+            total_done = np.stack(total_done).transpose().reshape([-1])
 
-        value, next_value, policy = agent.forward_transition(total_state, total_next_state)
+            value, next_value, policy = agent.forward_transition(total_state, total_next_state)
 
-        policy = policy.detach()
-        m = F.softmax(policy, dim=-1)
-        recent_prob.append(m.max(1)[0].mean().cpu().numpy())
-        writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
+            # logging utput to see how convergent it is.
+            policy = policy.detach()
+            m = F.softmax(policy, dim=-1)
+            recent_prob.append(m.max(1)[0].mean().cpu().numpy())
+            writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
 
-        total_target = []
-        total_adv = []
-        for idx in range(num_worker):
-            target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
-                                          total_done[idx * num_step:(idx + 1) * num_step],
-                                          value[idx * num_step:(idx + 1) * num_step],
-                                          next_value[idx * num_step:(idx + 1) * num_step])
-            # print(target.shape)
-            total_target.append(target)
-            total_adv.append(adv)
+            total_target = []
+            total_adv = []
+            for idx in range(num_worker):
+                target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
+                                              total_done[idx * num_step:(idx + 1) * num_step],
+                                              value[idx * num_step:(idx + 1) * num_step],
+                                              next_value[idx * num_step:(idx + 1) * num_step])
+                total_target.append(target)
+                total_adv.append(adv)
 
-        agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+            agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
 
-        # adjust learning rate
-        if lr_schedule:
-            new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
-            for param_group in agent.optimizer.param_groups:
-                param_group['lr'] = new_learing_rate
-                writer.add_scalar('data/lr', new_learing_rate, sample_episode)
+            # adjust learning rate
+            if lr_schedule:
+                new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
+                for param_group in agent.optimizer.param_groups:
+                    param_group['lr'] = new_learing_rate
+                    writer.add_scalar('data/lr', new_learing_rate, sample_episode)
 
-        if global_step % (num_worker * num_step * 100) == 0:
-            torch.save(agent.model.state_dict(), model_path)
+            if global_step % (num_worker * num_step * 100) == 0:
+                torch.save(agent.model.state_dict(), model_path)
