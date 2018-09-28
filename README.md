@@ -4,7 +4,7 @@
 - [x] Advantage Actor critic [[1]](#references)
 - [x] Parallel Advantage Actor critic [[2]](#references)
 - [x] Noisy Networks for Exploration [[3]](#references)
-- [ ] Proximal Policy Optimization Algorithms [[4]](#references) (WIP)
+- [x] Proximal Policy Optimization Algorithms [[4]](#references) (WIP)
  
 ## 1. Setup
 ####  Requirements
