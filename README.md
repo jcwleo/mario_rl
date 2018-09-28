@@ -23,10 +23,18 @@ Modify the parameters in `mario_a2c.py` as you like.
 ```
 python3 mario_a2c.py
 ```
+or
+```
+python3 mario_ppo.py
+```
 ## 3. How to Eval
 Modify the `is_load_model`, `is_render` parameters in `mario_a2c.py` as you like.
 ```
 python3 mario_a2c.py
+```
+or
+```
+python3 mario_ppo.py
 ```
 ## 4. Loss/Reward Graph
 ![image](https://user-images.githubusercontent.com/23333028/45729323-f6b9d680-bc06-11e8-9844-cc9b1433928d.png)
