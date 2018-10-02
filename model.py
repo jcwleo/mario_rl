@@ -105,6 +105,49 @@ class BaseActorCriticNetwork(nn.Module):
         return policy, value
 
 
+class DeepCnnActorCriticNetwork(nn.Module):
+    def __init__(self, input_size, output_size, use_noisy_net=False):
+        super(DeepCnnActorCriticNetwork, self).__init__()
+
+        if use_noisy_net:
+            print('use NoisyNet')
+            linear = NoisyLinear
+        else:
+            linear = nn.Linear
+
+        self.feature = nn.Sequential(
+            nn.Conv2d(in_channels=4, out_channels=32, kernel_size=4, stride=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=5, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=4, stride=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=4),
+            nn.ReLU(),
+            Flatten(),
+            linear(50176, 512),
+            nn.ReLU()
+        )
+        self.actor = linear(512, output_size)
+        self.critic = linear(512, 1)
+
+        for p in self.modules():
+            if isinstance(p, nn.Conv2d):
+                init.kaiming_uniform_(p.weight)
+                p.bias.data.zero_()
+
+            if isinstance(p, nn.Linear):
+                init.kaiming_uniform_(p.weight, a=1.0)
+                p.bias.data.zero_()
+
+    def forward(self, state):
+        x = self.feature(state)
+        policy = self.actor(x)
+        value = self.critic(x)
+        return policy, value
+
 class CnnActorCriticNetwork(nn.Module):
     def __init__(self, input_size, output_size, use_noisy_net=False):
         super(CnnActorCriticNetwork, self).__init__()

@@ -110,7 +110,7 @@ class MarioEnvironment(Process):
 class ActorAgent(object):
     def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
                  use_noisy_net=True):
-        self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
+        self.model = DeepCnnActorCriticNetwork(input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -184,7 +184,7 @@ class ActorAgent(object):
                 surr2 = torch.clamp(ratio, 1.0 - ppo_eps, 1.0 + ppo_eps) * adv_batch[sample_idx]
 
                 actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = F.mse_loss(value.sum(1), target_batch[sample_idx])
+                critic_loss = F.smooth_l1_loss(value.sum(1), target_batch[sample_idx])
 
                 self.optimizer.zero_grad()
                 loss = actor_loss + critic_loss
@@ -220,7 +220,7 @@ def make_train_data(reward, done, value, next_value):
 
 
 if __name__ == '__main__':
-    env_id = 'SuperMarioBros-v0'
+    env_id = 'SuperMarioBros-1-3-v0'
     env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
@@ -240,14 +240,14 @@ if __name__ == '__main__':
     use_noisy_net = True
 
     model_path = 'models/{}_{}.model'.format(env_id, datetime.date.today().isoformat())
-    load_model_path = 'models/SuperMarioBros-v2_2018-09-18.model'
+    load_model_path = 'models/SuperMarioBros-v0_2018-09-26.model'
 
     lam = 0.95
     num_worker = 8
     num_step = 128
     ppo_eps = 0.1
     epoch = 3
-    batch_size = 32 * num_worker
+    batch_size = 4 * num_worker
     max_step = 1.15e8
 
     learning_rate = 0.00025
