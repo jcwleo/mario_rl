@@ -199,28 +199,28 @@ class CuriosityModel(nn.Module):
         feature_output = int(576 / 2)
         self.feature = nn.Sequential(
             nn.Conv2d(4, 32, 3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.ELU(),
             nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.ELU(),
             nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.ELU(),
             nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.ELU(),
             nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ReLU(),
+            nn.ELU(),
             Flatten(),
         )
 
         self.inverse_net = nn.Sequential(
-            nn.Linear(feature_output + feature_output, 256),
-            nn.ReLU(),
-            nn.Linear(256, output_size)
+            nn.Linear(feature_output + feature_output, 128),
+            nn.ELU(),
+            nn.Linear(128, output_size)
         )
 
         self.forward_net = nn.Sequential(
-            nn.Linear(output_size + feature_output, 256),
-            nn.ReLU(),
-            nn.Linear(256, feature_output)
+            nn.Linear(output_size + feature_output, 128),
+            nn.ELU(),
+            nn.Linear(128, feature_output)
         )
         for p in self.modules():
             if isinstance(p, nn.Conv2d):

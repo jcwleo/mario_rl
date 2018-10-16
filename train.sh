@@ -1,2 +1,2 @@
 #!/bin/bash
-CUDA_VISIBLE_DEVICES=$1 python mario_a2c.py
+CUDA_VISIBLE_DEVICES=0 python $1

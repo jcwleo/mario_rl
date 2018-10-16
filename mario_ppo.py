@@ -74,24 +74,23 @@ class MarioEnvironment(Process):
                 if info['flag_get'] or self.stage < info['stage']:
                     r = 1.
                     self.stage = info['stage']
-                elif force_done:
-                    r = -1.
+                # elif force_done:
+                #     r = -1.
                 else:
                     r = 0.
             else:
-                r = reward
+                r = log_reward
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
 
-            self.rall += log_reward
             self.steps += 1
 
             if done:
                 self.recent_rlist.append(self.rall)
-                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}".format(self.episode, self.env_idx,
+                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}  Stage: {}".format(self.episode, self.env_idx,
                                                                                         self.steps, self.rall,
-                                                                                        np.mean(self.recent_rlist)))
+                                                                                        np.mean(self.recent_rlist), info['stage']))
 
                 self.history = self.reset()
 
@@ -164,8 +163,8 @@ class ActorAgent(object):
         action_onehot.scatter_(1, action.view(len(action), -1), 1)
 
         real_next_state_feature, pred_next_state_feature, pred_action = self.icm([state, next_state, action_onehot])
-        intrinsic_reward = eta * ((real_next_state_feature - pred_next_state_feature).pow(2)).sum(1) / 2.
-        return intrinsic_reward.data.cpu().numpy()
+        intrinsic_reward = eta * (real_next_state_feature - pred_next_state_feature).pow(2).sum(1) / 2
+        return np.clip(intrinsic_reward.data.cpu().numpy(), 0, 1)
 
     @staticmethod
     def random_choice_prob_index(p, axis=1):
@@ -240,11 +239,14 @@ class ActorAgent(object):
 
                 self.optimizer.zero_grad()
                 if use_icm:
-                    loss = lamb * (actor_loss + 0.5 * critic_loss) + (1 - beta) * inverse_loss + beta * forward_loss
+                    loss = (actor_loss + 0.5 * critic_loss) + icm_scale * ((1 - beta) * inverse_loss + beta * forward_loss)
                 else:
                     loss = actor_loss + 0.5 * critic_loss - entropy_coef * entropy
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
+                if use_icm:
+                    torch.nn.utils.clip_grad_norm_(list(self.model.parameters()) + list(self.icm.parameters()), clip_grad_norm)
+                else:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
                 self.optimizer.step()
 
 
@@ -275,7 +277,7 @@ def make_train_data(reward, done, value, next_value):
 
 
 if __name__ == '__main__':
-    env_id = 'SuperMarioBros-1-3-v0'
+    env_id = 'SuperMarioBros-v0'
     env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
@@ -283,7 +285,7 @@ if __name__ == '__main__':
     env.close()
 
     writer = SummaryWriter()
-    use_cuda = False
+    use_cuda = True
     use_gae = True
     life_done = True
 
@@ -291,7 +293,7 @@ if __name__ == '__main__':
     is_training = True
 
     is_render = False
-    use_standardization = False
+    use_standardization = True
     use_noisy_net = True
     use_icm = True
 
@@ -299,17 +301,14 @@ if __name__ == '__main__':
     load_model_path = 'models/SuperMarioBros-v0_2018-09-26.model'
 
     lam = 0.95
-    num_worker = 2
+    num_worker = 16
     num_step = 128
     ppo_eps = 0.1
     epoch = 3
     batch_size = 32
     max_step = 1.15e8
 
-    if use_icm:
-        learning_rate = 0.001
-    else:
-        learning_rate = 0.00025
+    learning_rate = 0.00025
     lr_schedule = False
 
     stable_eps = 1e-30
@@ -319,7 +318,7 @@ if __name__ == '__main__':
     clip_grad_norm = 0.5
 
     # Curiosity param
-    lamb = 0.1
+    icm_scale = 10.0
     beta = 0.2
     eta = 0.01
 
@@ -384,7 +383,7 @@ if __name__ == '__main__':
             if use_icm:
                 intrinsic_reward = agent.compute_intrinsic_reward(states, next_states, actions)
                 rewards += intrinsic_reward
-
+            
             total_state.append(states)
             total_next_state.append(next_states)
             total_reward.append(rewards)
