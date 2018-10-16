@@ -12,7 +12,7 @@ import cv2
 import time
 import datetime
 
-from .model import *
+from model import *
 
 import torch.optim as optim
 from torch.multiprocessing import Pipe, Process
@@ -67,11 +67,24 @@ class MarioEnvironment(Process):
                 force_done = done
 
             # reward range -15 ~ 15
-            reward = reward / 15
+            log_reward = reward / 15
+            self.rall += log_reward
+
+            if use_icm:
+                if info['flag_get'] or self.stage < info['stage']:
+                    r = 1.
+                    self.stage = info['stage']
+                elif force_done:
+                    r = -1.
+                else:
+                    r = 0.
+            else:
+                r = reward
+
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
 
-            self.rall += reward
+            self.rall += log_reward
             self.steps += 1
 
             if done:
@@ -82,13 +95,14 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], reward, force_done, done])
+            self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
 
     def reset(self):
         self.steps = 0
         self.episode += 1
         self.rall = 0
         self.lives = 3
+        self.stage = 1
         self.get_init_state(self.env.reset())
         return self.history[:, :, :]
 
@@ -110,6 +124,8 @@ class ActorAgent(object):
     def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
                  use_noisy_net=True):
         self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
+        if use_icm:
+            self.icm = CuriosityModel(input_size, output_size)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -117,11 +133,16 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        if use_icm:
+            self.optimizer = optim.Adam(list(self.model.parameters()) + list(self.icm.parameters()), lr=learning_rate)
+        else:
+            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
+        if use_icm:
+            self.icm = self.icm.to(self.device)
 
     def get_action(self, state):
         state = torch.Tensor(state).to(self.device)
@@ -132,6 +153,19 @@ class ActorAgent(object):
         action = self.random_choice_prob_index(policy)
 
         return action
+
+    def compute_intrinsic_reward(self, state, next_state, action):
+        state = torch.FloatTensor(state).to(self.device)
+        next_state = torch.FloatTensor(next_state).to(self.device)
+        action = torch.LongTensor(action).to(self.device)
+
+        action_onehot = torch.FloatTensor(len(action), self.output_size).to(self.device)
+        action_onehot.zero_()
+        action_onehot.scatter_(1, action.view(len(action), -1), 1)
+
+        real_next_state_feature, pred_next_state_feature, pred_action = self.icm([state, next_state, action_onehot])
+        intrinsic_reward = eta * ((real_next_state_feature - pred_next_state_feature).pow(2)).sum(1) / 2.
+        return intrinsic_reward.data.cpu().numpy()
 
     @staticmethod
     def random_choice_prob_index(p, axis=1):
@@ -152,13 +186,16 @@ class ActorAgent(object):
 
         return value, next_value, policy
 
-    def train_model(self, s_batch, target_batch, y_batch, adv_batch):
+    def train_model(self, s_batch, next_s_batch, target_batch, y_batch, adv_batch):
         s_batch = torch.FloatTensor(s_batch).to(self.device)
+        next_s_batch = torch.FloatTensor(next_s_batch).to(self.device)
         target_batch = torch.FloatTensor(target_batch).to(self.device)
         y_batch = torch.LongTensor(y_batch).to(self.device)
         adv_batch = torch.FloatTensor(adv_batch).to(self.device)
 
         sample_range = np.arange(len(s_batch))
+        ce = nn.CrossEntropyLoss()
+        forward_mse = nn.MSELoss()
 
         if use_standardization:
             adv_batch = (adv_batch - adv_batch.mean()) / (adv_batch.std() + stable_eps)
@@ -173,6 +210,21 @@ class ActorAgent(object):
             np.random.shuffle(sample_range)
             for j in range(int(len(s_batch) / batch_size)):
                 sample_idx = sample_range[batch_size * j:batch_size * (j + 1)]
+
+                # --------------------------------------------------------------------------------
+                if use_icm:
+                    # for Curiosity-driven
+                    action_onehot = torch.FloatTensor(len(s_batch[sample_idx]), self.output_size).to(self.device)
+                    action_onehot.zero_()
+                    action_onehot.scatter_(1, y_batch.view(len(y_batch[sample_idx]), -1), 1)
+
+                    real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
+                        [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
+
+                    inverse_loss = ce(pred_action, y_batch[sample_idx])
+                    forward_loss = forward_mse(real_next_state_feature, pred_next_state_feature)
+                # ---------------------------------------------------------------------------------
+
                 policy, value = self.model(s_batch[sample_idx])
                 m = Categorical(F.softmax(policy, dim=-1))
                 log_prob = m.log_prob(y_batch[sample_idx])
@@ -183,10 +235,14 @@ class ActorAgent(object):
                 surr2 = torch.clamp(ratio, 1.0 - ppo_eps, 1.0 + ppo_eps) * adv_batch[sample_idx]
 
                 actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = F.smooth_l1_loss(value.sum(1), target_batch[sample_idx])
+                critic_loss = F.mse_loss(value.sum(1), target_batch[sample_idx])
+                entropy = m.entropy().mean()
 
                 self.optimizer.zero_grad()
-                loss = actor_loss + critic_loss
+                if use_icm:
+                    loss = lamb * (actor_loss + 0.5 * critic_loss) + (1 - beta) * inverse_loss + beta * forward_loss
+                else:
+                    loss = actor_loss + 0.5 * critic_loss - entropy_coef * entropy
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
                 self.optimizer.step()
@@ -227,7 +283,7 @@ if __name__ == '__main__':
     env.close()
 
     writer = SummaryWriter()
-    use_cuda = True
+    use_cuda = False
     use_gae = True
     life_done = True
 
@@ -237,19 +293,23 @@ if __name__ == '__main__':
     is_render = False
     use_standardization = False
     use_noisy_net = True
+    use_icm = True
 
     model_path = 'models/{}_{}.model'.format(env_id, datetime.date.today().isoformat())
     load_model_path = 'models/SuperMarioBros-v0_2018-09-26.model'
 
     lam = 0.95
-    num_worker = 8
+    num_worker = 2
     num_step = 128
     ppo_eps = 0.1
     epoch = 3
-    batch_size = 4 * num_worker
+    batch_size = 32
     max_step = 1.15e8
 
-    learning_rate = 0.00025
+    if use_icm:
+        learning_rate = 0.001
+    else:
+        learning_rate = 0.00025
     lr_schedule = False
 
     stable_eps = 1e-30
@@ -257,6 +317,11 @@ if __name__ == '__main__':
     alpha = 0.99
     gamma = 0.99
     clip_grad_norm = 0.5
+
+    # Curiosity param
+    lamb = 0.1
+    beta = 0.2
+    eta = 0.01
 
     agent = ActorAgent(input_size, output_size, num_worker, num_step, gamma, use_cuda=use_cuda,
                        use_noisy_net=use_noisy_net)
@@ -302,18 +367,23 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            next_states, rewards, dones, real_dones = [], [], [], []
+            next_states, rewards, dones, real_dones, log_rewards = [], [], [], [], []
             for parent_conn in parent_conns:
-                s, r, d, rd = parent_conn.recv()
+                s, r, d, rd, lr = parent_conn.recv()
                 next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
                 real_dones.append(rd)
+                log_rewards.append(lr)
 
             next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
             dones = np.hstack(dones)
             real_dones = np.hstack(real_dones)
+
+            if use_icm:
+                intrinsic_reward = agent.compute_intrinsic_reward(states, next_states, actions)
+                rewards += intrinsic_reward
 
             total_state.append(states)
             total_next_state.append(next_states)
@@ -323,7 +393,7 @@ if __name__ == '__main__':
 
             states = next_states[:, :, :, :]
 
-            sample_rall += rewards[sample_env_idx]
+            sample_rall += log_rewards[sample_env_idx]
             sample_step += 1
             if real_dones[sample_env_idx]:
                 sample_episode += 1
@@ -357,7 +427,8 @@ if __name__ == '__main__':
                 total_target.append(target)
                 total_adv.append(adv)
 
-            agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+            agent.train_model(total_state, total_next_state, np.hstack(total_target), total_action,
+                              np.hstack(total_adv))
 
             # adjust learning rate
             if lr_schedule:

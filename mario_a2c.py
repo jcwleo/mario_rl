@@ -130,7 +130,10 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.Adam(list(self.model.parameters())+list(self.icm.parameters()), lr=learning_rate)
+        if use_icm:
+            self.optimizer = optim.Adam(list(self.model.parameters()) + list(self.icm.parameters()), lr=learning_rate)
+        else:
+            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -153,7 +156,7 @@ class ActorAgent(object):
         next_state = torch.FloatTensor(next_state).to(self.device)
         action = torch.LongTensor(action).to(self.device)
 
-        action_onehot = torch.FloatTensor(len(action), self.output_size)
+        action_onehot = torch.FloatTensor(len(action), self.output_size).to(self.device)
         action_onehot.zero_()
         action_onehot.scatter_(1, action.view(len(action), -1), 1)
 
@@ -197,7 +200,7 @@ class ActorAgent(object):
         # --------------------------------------------------------------------------------
         if use_icm:
             # for Curiosity-driven
-            action_onehot = torch.FloatTensor(len(s_batch), self.output_size)
+            action_onehot = torch.FloatTensor(len(s_batch), self.output_size).to(self.device)
             action_onehot.zero_()
             action_onehot.scatter_(1, y_batch.view(len(y_batch), -1), 1)
 
@@ -222,13 +225,14 @@ class ActorAgent(object):
         mse = nn.MSELoss()
         critic_loss = mse(value.sum(1), target_batch)
 
+        self.optimizer.zero_grad()
+
         # Total loss
         if use_icm:
             loss = lamb * (actor_loss.mean() + 0.5 * critic_loss) + (1 - beta) * inverse_loss + beta * forward_loss
         else:
             loss = actor_loss.mean() + 0.5 * critic_loss - entropy_coef * entropy.mean()
 
-        self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
         self.optimizer.step()
@@ -285,11 +289,14 @@ if __name__ == '__main__':
     load_model_path = 'models/SuperMarioBros-v2_2018-09-18.model'
 
     lam = 0.95
-    num_worker = 2
+    num_worker = 16
     num_step = 5
     max_step = 1.15e8
 
-    learning_rate = 0.00025
+    if use_icm:
+        learning_rate = 0.001
+    else:
+        learning_rate = 0.00025
     lr_schedule = False
 
     stable_eps = 1e-30
