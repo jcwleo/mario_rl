@@ -67,15 +67,17 @@ class MarioEnvironment(Process):
                 force_done = done
 
             # reward range -15 ~ 15
-            reward = reward / 15
+            log_reward = reward / 15
             self.rall += reward
 
             if use_icm:
                 if info['flag_get'] or self.stage < info['stage']:
-                    reward = 10.
+                    r = 10.
                     self.stage = info['stage']
+                elif force_done:
+                    r = -10.
                 else:
-                    reward = 0.
+                    r = 0.
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
@@ -90,7 +92,7 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], reward, force_done, done])
+            self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
 
     def reset(self):
         self.steps = 0
@@ -128,7 +130,7 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(list(self.model.parameters())+list(self.icm.parameters()), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -191,7 +193,7 @@ class ActorAgent(object):
 
         ce = nn.CrossEntropyLoss()
         # mse = nn.SmoothL1Loss()
-        mse = nn.MSELoss()
+        forward_mse = nn.MSELoss()
         # --------------------------------------------------------------------------------
         if use_icm:
             # for Curiosity-driven
@@ -203,7 +205,7 @@ class ActorAgent(object):
                 [s_batch, next_s_batch, action_onehot])
 
             inverse_loss = ce(pred_action, y_batch)
-            forward_loss = mse(real_next_state_feature, pred_next_state_feature)
+            forward_loss = forward_mse(real_next_state_feature, pred_next_state_feature)
 
         # --------------------------------------------------------------------------------
         # for multiply advantage
@@ -217,6 +219,7 @@ class ActorAgent(object):
         entropy = m.entropy()
 
         # Critic loss
+        mse = nn.MSELoss()
         critic_loss = mse(value.sum(1), target_batch)
 
         # Total loss
@@ -273,7 +276,7 @@ if __name__ == '__main__':
     is_load_model = False
     is_training = True
 
-    is_render = False
+    is_render = True
     use_standardization = True
     use_noisy_net = True
     use_icm = True
@@ -282,8 +285,8 @@ if __name__ == '__main__':
     load_model_path = 'models/SuperMarioBros-v2_2018-09-18.model'
 
     lam = 0.95
-    num_worker = 8
-    num_step = 16
+    num_worker = 2
+    num_step = 5
     max_step = 1.15e8
 
     learning_rate = 0.00025
@@ -344,13 +347,14 @@ if __name__ == '__main__':
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            next_states, rewards, dones, real_dones = [], [], [], []
+            next_states, rewards, dones, real_dones, log_rewards = [], [], [], [], []
             for parent_conn in parent_conns:
-                s, r, d, rd = parent_conn.recv()
+                s, r, d, rd, lr = parent_conn.recv()
                 next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
                 real_dones.append(rd)
+                log_rewards.append(lr)
 
             next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
@@ -369,7 +373,7 @@ if __name__ == '__main__':
 
             states = next_states[:, :, :, :]
 
-            sample_rall += rewards[sample_env_idx]
+            sample_rall += log_rewards[sample_env_idx]
             sample_step += 1
             if real_dones[sample_env_idx]:
                 sample_episode += 1

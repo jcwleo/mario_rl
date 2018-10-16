@@ -196,16 +196,18 @@ class CuriosityModel(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
 
-        feature_output = 1152
+        feature_output = int(576 / 2)
         self.feature = nn.Sequential(
             nn.Conv2d(4, 32, 3, stride=2, padding=1),
-            nn.ELU(),
+            nn.ReLU(),
             nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ELU(),
+            nn.ReLU(),
             nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ELU(),
+            nn.ReLU(),
             nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ELU(),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),
+            nn.ReLU(),
             Flatten(),
         )
 
