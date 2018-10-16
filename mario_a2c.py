@@ -1,4 +1,3 @@
-import ray
 import gym
 import os
 import random
@@ -69,10 +68,18 @@ class MarioEnvironment(Process):
 
             # reward range -15 ~ 15
             reward = reward / 15
+            self.rall += reward
+
+            if use_icm:
+                if info['flag_get'] or self.stage < info['stage']:
+                    reward = 10.
+                    self.stage = info['stage']
+                else:
+                    reward = 0.
+
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
 
-            self.rall += reward
             self.steps += 1
 
             if done:
@@ -90,6 +97,7 @@ class MarioEnvironment(Process):
         self.episode += 1
         self.rall = 0
         self.lives = 3
+        self.stage = 1
         self.get_init_state(self.env.reset())
         return self.history[:, :, :]
 
@@ -108,8 +116,11 @@ class MarioEnvironment(Process):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False, use_noisy_net=True):
+    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
+                 use_noisy_net=True):
         self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
+        if use_icm:
+            self.icm = CuriosityModel(input_size, output_size)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -122,6 +133,8 @@ class ActorAgent(object):
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
+        if use_icm:
+            self.icm = self.icm.to(self.device)
 
     def get_action(self, state):
         state = torch.Tensor(state).to(self.device)
@@ -132,6 +145,19 @@ class ActorAgent(object):
         action = self.random_choice_prob_index(policy)
 
         return action
+
+    def compute_intrinsic_reward(self, state, next_state, action):
+        state = torch.FloatTensor(state).to(self.device)
+        next_state = torch.FloatTensor(next_state).to(self.device)
+        action = torch.LongTensor(action).to(self.device)
+
+        action_onehot = torch.FloatTensor(len(action), self.output_size)
+        action_onehot.zero_()
+        action_onehot.scatter_(1, action.view(len(action), -1), 1)
+
+        real_next_state_feature, pred_next_state_feature, pred_action = self.icm([state, next_state, action_onehot])
+        intrinsic_reward = eta * ((real_next_state_feature - pred_next_state_feature).pow(2)).sum(1) / 2.
+        return intrinsic_reward.data.cpu().numpy()
 
     @staticmethod
     def random_choice_prob_index(p, axis=1):
@@ -152,19 +178,37 @@ class ActorAgent(object):
 
         return value, next_value, policy
 
-    def train_model(self, s_batch, target_batch, y_batch, adv_batch):
+    def train_model(self, s_batch, next_s_batch, target_batch, y_batch, adv_batch):
         with torch.no_grad():
             s_batch = torch.FloatTensor(s_batch).to(self.device)
+            next_s_batch = torch.FloatTensor(next_s_batch).to(self.device)
             target_batch = torch.FloatTensor(target_batch).to(self.device)
             y_batch = torch.LongTensor(y_batch).to(self.device)
             adv_batch = torch.FloatTensor(adv_batch).to(self.device)
 
+        if use_standardization:
+            adv_batch = (adv_batch - adv_batch.mean()) / (adv_batch.std() + stable_eps)
+
+        ce = nn.CrossEntropyLoss()
+        # mse = nn.SmoothL1Loss()
+        mse = nn.MSELoss()
+        # --------------------------------------------------------------------------------
+        if use_icm:
+            # for Curiosity-driven
+            action_onehot = torch.FloatTensor(len(s_batch), self.output_size)
+            action_onehot.zero_()
+            action_onehot.scatter_(1, y_batch.view(len(y_batch), -1), 1)
+
+            real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
+                [s_batch, next_s_batch, action_onehot])
+
+            inverse_loss = ce(pred_action, y_batch)
+            forward_loss = mse(real_next_state_feature, pred_next_state_feature)
+
+        # --------------------------------------------------------------------------------
         # for multiply advantage
         policy, value = self.model(s_batch)
         m = Categorical(F.softmax(policy, dim=-1))
-
-        # mse = nn.SmoothL1Loss()
-        mse = nn.MSELoss()
 
         # Actor loss
         actor_loss = -m.log_prob(y_batch) * adv_batch
@@ -176,7 +220,10 @@ class ActorAgent(object):
         critic_loss = mse(value.sum(1), target_batch)
 
         # Total loss
-        loss = actor_loss.mean() + 0.5 * critic_loss - entropy_coef * entropy.mean()
+        if use_icm:
+            loss = lamb * (actor_loss.mean() + 0.5 * critic_loss) + (1 - beta) * inverse_loss + beta * forward_loss
+        else:
+            loss = actor_loss.mean() + 0.5 * critic_loss - entropy_coef * entropy.mean()
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -186,8 +233,6 @@ class ActorAgent(object):
 
 def make_train_data(reward, done, value, next_value):
     discounted_return = np.empty([num_step])
-    if use_standardization:
-        reward = (reward - np.mean(reward)) / (np.std(reward) + stable_eps)
 
     # Discounted Return
     if use_gae:
@@ -209,14 +254,11 @@ def make_train_data(reward, done, value, next_value):
         # For Actor
         adv = discounted_return - value
 
-    if use_standardization:
-        adv = (adv - np.mean(adv)) / (np.std(adv) + stable_eps)
-
     return discounted_return, adv
 
 
 if __name__ == '__main__':
-    env_id = 'SuperMarioBros-v2'
+    env_id = 'SuperMarioBros-v0'
     env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
@@ -224,7 +266,7 @@ if __name__ == '__main__':
     env.close()
 
     writer = SummaryWriter()
-    use_cuda = True
+    use_cuda = False
     use_gae = True
     life_done = True
 
@@ -232,14 +274,15 @@ if __name__ == '__main__':
     is_training = True
 
     is_render = False
-    use_standardization = False
+    use_standardization = True
     use_noisy_net = True
+    use_icm = True
 
     model_path = 'models/{}_{}.model'.format(env_id, datetime.date.today().isoformat())
     load_model_path = 'models/SuperMarioBros-v2_2018-09-18.model'
 
     lam = 0.95
-    num_worker = 16
+    num_worker = 8
     num_step = 16
     max_step = 1.15e8
 
@@ -252,14 +295,20 @@ if __name__ == '__main__':
     gamma = 0.99
     clip_grad_norm = 0.5
 
-    agent = ActorAgent(input_size, output_size, num_worker, num_step, gamma, use_cuda=use_cuda, use_noisy_net=use_noisy_net)
+    # Curiosity param
+    lamb = 0.1
+    beta = 0.2
+    eta = 0.01
+
+    agent = ActorAgent(input_size, output_size, num_worker, num_step, gamma, use_cuda=use_cuda,
+                       use_noisy_net=use_noisy_net)
 
     if is_load_model:
         if use_cuda:
             agent.model.load_state_dict(torch.load(load_model_path))
         else:
             agent.model.load_state_dict(torch.load(load_model_path, map_location='cpu'))
-    
+
     if not is_training:
         agent.model.eval()
 
@@ -308,6 +357,10 @@ if __name__ == '__main__':
             dones = np.hstack(dones)
             real_dones = np.hstack(real_dones)
 
+            if use_icm:
+                intrinsic_reward = agent.compute_intrinsic_reward(states, next_states, actions)
+                rewards += intrinsic_reward
+
             total_state.append(states)
             total_next_state.append(next_states)
             total_reward.append(rewards)
@@ -350,7 +403,8 @@ if __name__ == '__main__':
                 total_target.append(target)
                 total_adv.append(adv)
 
-            agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+            agent.train_model(total_state, total_next_state, np.hstack(total_target), total_action,
+                              np.hstack(total_adv))
 
             # adjust learning rate
             if lr_schedule:

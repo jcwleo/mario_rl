@@ -148,6 +148,7 @@ class DeepCnnActorCriticNetwork(nn.Module):
         value = self.critic(x)
         return policy, value
 
+
 class CnnActorCriticNetwork(nn.Module):
     def __init__(self, input_size, output_size, use_noisy_net=False):
         super(CnnActorCriticNetwork, self).__init__()
@@ -186,3 +187,59 @@ class CnnActorCriticNetwork(nn.Module):
         policy = self.actor(x)
         value = self.critic(x)
         return policy, value
+
+
+class CuriosityModel(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(CuriosityModel, self).__init__()
+
+        self.input_size = input_size
+        self.output_size = output_size
+
+        feature_output = 1152
+        self.feature = nn.Sequential(
+            nn.Conv2d(4, 32, 3, stride=2, padding=1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),
+            nn.ELU(),
+            Flatten(),
+        )
+
+        self.inverse_net = nn.Sequential(
+            nn.Linear(feature_output + feature_output, 256),
+            nn.ReLU(),
+            nn.Linear(256, output_size)
+        )
+
+        self.forward_net = nn.Sequential(
+            nn.Linear(output_size + feature_output, 256),
+            nn.ReLU(),
+            nn.Linear(256, feature_output)
+        )
+        for p in self.modules():
+            if isinstance(p, nn.Conv2d):
+                init.kaiming_uniform_(p.weight)
+                p.bias.data.zero_()
+
+            if isinstance(p, nn.Linear):
+                init.kaiming_uniform_(p.weight, a=1.0)
+                p.bias.data.zero_()
+
+    def forward(self, inputs):
+        state, next_state, action = inputs
+
+        # get pred action
+        pred_action = torch.cat((self.feature(state), self.feature(next_state)), 1)
+        pred_action = self.inverse_net(pred_action)
+        # ---------------------
+
+        # get pred next state
+        pred_next_state_feature = torch.cat((self.feature(state), action), 1)
+        pred_next_state_feature = self.forward_net(pred_next_state_feature)
+
+        real_next_state_feature = self.feature(next_state)
+        return real_next_state_feature, pred_next_state_feature, pred_action

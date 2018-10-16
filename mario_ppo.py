@@ -1,4 +1,3 @@
-import ray
 import gym
 import os
 import random
@@ -13,7 +12,7 @@ import cv2
 import time
 import datetime
 
-from model import *
+from .model import *
 
 import torch.optim as optim
 from torch.multiprocessing import Pipe, Process
@@ -110,7 +109,7 @@ class MarioEnvironment(Process):
 class ActorAgent(object):
     def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
                  use_noisy_net=True):
-        self.model = DeepCnnActorCriticNetwork(input_size, output_size, use_noisy_net)
+        self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
