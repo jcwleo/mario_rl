@@ -18,6 +18,7 @@
 - [OpenCV Python](https://pypi.python.org/pypi/opencv-python)
 - [PyTorch](http://pytorch.org/)
 - [tensorboardX](https://github.com/lanpa/tensorboardX)
+- [ray](https://ray.readthedocs.io)
 
 
 ## 2. How to Train
