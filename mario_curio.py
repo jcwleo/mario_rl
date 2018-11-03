@@ -80,37 +80,7 @@ class MarioEnvironment(Process):
             log_reward = reward / 15
             self.rall += log_reward
 
-            if use_icm:
-                if info['flag_get'] or self.stage < info['stage']:
-                    r = 0.
-                    self.stage = info['stage']
-                # elif force_done:
-                #     r = -1.
-                else:
-                    # reward
-                    if self.max_pos < info['x_pos']:
-                        self.max_pos = info['x_pos']
-                        if self.max_pos % 100 == 0:
-                            r = 1
-                    if force_done:
-                        self.max_pos = 0
-                    r = 0.
-
-            else:
-                if info['flag_get'] or self.stage < info['stage']:
-                    r = 5.
-                    self.stage = info['stage']
-
-                #r = 0
-                # if self.max_pos < info['x_pos']:
-                #    self.max_pos = info['x_pos']
-                #    if self.max_pos % 100 == 0:
-                #        r = 1.
-                # if force_done:
-                #    self.max_pos = 0
-                r = log_reward
-                if force_done:
-                    r = -10
+            r = 0.
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
@@ -132,12 +102,8 @@ class MarioEnvironment(Process):
                         self.max_pos))
 
                 self.history = self.reset()
-            if use_icm:
-                self.child_conn.send(
-                    [self.history[:, :, :], r, False, done, log_reward])
-            else:
-                self.child_conn.send(
-                    [self.history[:, :, :], r, False, done, log_reward])
+            self.child_conn.send(
+                [self.history[:, :, :], r, False, done, log_reward])
 
     def reset(self):
         self.steps = 0
@@ -177,8 +143,8 @@ class ActorAgent(object):
             use_noisy_net=True):
         self.model = CnnActorCriticNetwork(
             input_size, output_size, use_noisy_net)
-        if use_icm:
-            self.icm = CuriosityModel(input_size, output_size)
+
+        self.icm = CuriosityModel(input_size, output_size)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -186,22 +152,17 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        if use_icm:
-            self.optimizer = optim.Adam(
-                list(
-                    self.model.parameters()) +
-                list(
-                    self.icm.parameters()),
-                lr=learning_rate)
-        else:
-            self.optimizer = optim.Adam(
-                self.model.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(
+            list(
+                self.model.parameters()) +
+            list(
+                self.icm.parameters()),
+            lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         self.model = self.model.to(self.device)
-        if use_icm:
-            self.icm = self.icm.to(self.device)
+        self.icm = self.icm.to(self.device)
 
     def get_action(self, state):
         state = torch.Tensor(state).to(self.device)
@@ -228,7 +189,6 @@ class ActorAgent(object):
             [state, next_state, action_onehot])
         intrinsic_reward = eta * \
             (real_next_state_feature - pred_next_state_feature).pow(2).sum(1) / 2
-        # return np.clip(intrinsic_reward.data.cpu().numpy(), 0, 1)
         return intrinsic_reward.data.cpu().numpy()
 
     @staticmethod
@@ -267,8 +227,7 @@ class ActorAgent(object):
         ce = nn.CrossEntropyLoss()
         forward_mse = nn.MSELoss()
         self.model.train()
-        if use_icm:
-            self.icm.train()
+        self.icm.train()
 
         with torch.no_grad():
             # for multiply advantage
@@ -282,21 +241,19 @@ class ActorAgent(object):
                 sample_idx = sample_range[batch_size * j:batch_size * (j + 1)]
 
                 # --------------------------------------------------------------------------------
-                if use_icm:
-                    # for Curiosity-driven
-                    action_onehot = torch.FloatTensor(
-                        len(s_batch[sample_idx]), self.output_size).to(self.device)
-                    action_onehot.zero_()
-                    action_onehot.scatter_(1, y_batch.view(
-                        len(y_batch[sample_idx]), -1), 1)
+                # for Curiosity-driven
+                action_onehot = torch.FloatTensor(
+                    len(s_batch[sample_idx]), self.output_size).to(self.device)
+                action_onehot.zero_()
+                action_onehot.scatter_(1, y_batch.view(
+                    len(y_batch[sample_idx]), -1), 1)
 
-                    real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
-                        [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
-                    # print(pred_action)
-                    inverse_loss = ce(
-                        pred_action, y_batch[sample_idx].detach())
-                    forward_loss = forward_mse(
-                        pred_next_state_feature, real_next_state_feature.detach())
+                real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
+                    [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
+                inverse_loss = ce(
+                    pred_action, y_batch[sample_idx].detach())
+                forward_loss = forward_mse(
+                    pred_next_state_feature, real_next_state_feature.detach())
                 # ---------------------------------------------------------------------------------
 
                 policy, value = self.model(s_batch[sample_idx])
@@ -317,22 +274,13 @@ class ActorAgent(object):
                 entropy = m.entropy().mean()
 
                 self.optimizer.zero_grad()
-                if use_icm:
-                    loss = (actor_loss + 0.5 * critic_loss) + icm_scale * \
-                        ((1 - beta) * inverse_loss + beta * forward_loss)
-                else:
-                    loss = actor_loss + 0.5 * critic_loss - entropy_coef * entropy
+                loss = (actor_loss + 0.5 * critic_loss) + icm_scale * \
+                    ((1 - beta) * inverse_loss + beta * forward_loss)
                 loss.backward()
-                if use_icm:
-                    torch.nn.utils.clip_grad_norm_(
-                        list(
-                            self.model.parameters()) +
-                        list(
-                            self.icm.parameters()),
-                        clip_grad_norm)
-                else:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), clip_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.model.parameters()) +
+                    list(self.icm.parameters()),
+                    clip_grad_norm)
                 self.optimizer.step()
 
 
@@ -428,7 +376,6 @@ if __name__ == '__main__':
     is_render = False
     use_standardization = True
     use_noisy_net = False
-    use_icm = True
 
     model_path = 'models/{}_{}.model'.format(env_id,
                                              datetime.date.today().isoformat())
@@ -510,9 +457,7 @@ if __name__ == '__main__':
                 time.sleep(0.05)
 
             agent.model.eval()
-
-            if use_icm:
-                agent.icm.eval()
+            agent.icm.eval()
 
             actions = agent.get_action(states)
 
@@ -533,10 +478,10 @@ if __name__ == '__main__':
             dones = np.hstack(dones)
             real_dones = np.hstack(real_dones)
 
-            if use_icm:
-                intrinsic_reward = agent.compute_intrinsic_reward(
-                    states, next_states, actions)
-                rewards += intrinsic_reward
+            # total reward = int reward + ext Resard
+            intrinsic_reward = agent.compute_intrinsic_reward(
+                states, next_states, actions)
+            rewards += intrinsic_reward
 
             total_state.append(states)
             total_next_state.append(next_states)
@@ -547,15 +492,13 @@ if __name__ == '__main__':
             states = next_states[:, :, :, :]
 
             sample_rall += log_rewards[sample_env_idx]
-            if use_icm:
-                sample_i_rall += intrinsic_reward[sample_env_idx]
+            sample_i_rall += intrinsic_reward[sample_env_idx]
             sample_step += 1
             if real_dones[sample_env_idx]:
                 sample_episode += 1
                 writer.add_scalar('data/reward', sample_rall, sample_episode)
-                if use_icm:
-                    writer.add_scalar(
-                        'data/i-reward', sample_i_rall, sample_episode)
+                writer.add_scalar(
+                    'data/i-reward', sample_i_rall, sample_episode)
                 writer.add_scalar('data/step', sample_step, sample_episode)
                 sample_rall = 0
                 sample_i_rall = 0
@@ -572,14 +515,17 @@ if __name__ == '__main__':
 
             value, next_value, policy = agent.forward_transition(
                 total_state, total_next_state)
-            if use_icm:
-                total_reward_per_env = np.array([discounted_reward.update(
-                    reward_per_step) for reward_per_step in total_reward.reshape([num_worker, -1]).T])
-                total_reawrd_per_env = total_reward_per_env.reshape([-1])
-                mean, std, count = np.mean(total_reward), np.std(
-                    total_reward), len(total_reward)
-                reward_rms.update_from_moments(mean, std ** 2, count)
-                total_reward /= np.sqrt(reward_rms.var)
+
+            # running mean int reward
+            total_reward_per_env = np.array([discounted_reward.update(
+                reward_per_step) for reward_per_step in total_reward.reshape([num_worker, -1]).T])
+            total_reawrd_per_env = total_reward_per_env.reshape([-1])
+            mean, std, count = np.mean(total_reward), np.std(
+                total_reward), len(total_reward)
+            reward_rms.update_from_moments(mean, std ** 2, count)
+
+            # devided reward by running std
+            total_reward /= np.sqrt(reward_rms.var)
 
             # logging utput to see how convergent it is.
             policy = policy.detach()
