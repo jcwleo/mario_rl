@@ -18,7 +18,8 @@ class NoisyLinear(nn.Module):
         self.out_features = out_features
         self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
         self.bias = nn.Parameter(torch.Tensor(out_features))
-        self.noisy_weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        self.noisy_weight = nn.Parameter(
+            torch.Tensor(out_features, in_features))
         self.noisy_bias = nn.Parameter(torch.Tensor(out_features))
         self.noise_std = sigma0 / math.sqrt(self.in_features)
 
@@ -63,8 +64,8 @@ class NoisyLinear(nn.Module):
 
     def __repr__(self):
         return self.__class__.__name__ + '(' \
-               + 'in_features=' + str(self.in_features) \
-               + ', out_features=' + str(self.out_features) + ')'
+            + 'in_features=' + str(self.in_features) \
+            + ', out_features=' + str(self.out_features) + ')'
 
 
 class Flatten(nn.Module):
@@ -118,11 +119,23 @@ class DeepCnnActorCriticNetwork(nn.Module):
         self.feature = nn.Sequential(
             nn.Conv2d(in_channels=4, out_channels=32, kernel_size=4, stride=1),
             nn.ReLU(),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=5, stride=2),
+            nn.Conv2d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=5,
+                stride=2),
             nn.ReLU(),
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=4, stride=1),
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=128,
+                kernel_size=4,
+                stride=1),
             nn.ReLU(),
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=4, stride=2),
+            nn.Conv2d(
+                in_channels=128,
+                out_channels=256,
+                kernel_size=4,
+                stride=2),
             nn.ReLU(),
             nn.Conv2d(in_channels=256, out_channels=256, kernel_size=4),
             nn.ReLU(),
@@ -160,15 +173,29 @@ class CnnActorCriticNetwork(nn.Module):
             linear = nn.Linear
 
         self.feature = nn.Sequential(
-            nn.Conv2d(in_channels=4, out_channels=32, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1),
-            nn.ReLU(),
+            nn.Conv2d(
+                in_channels=4,
+                out_channels=32,
+                kernel_size=8,
+                stride=4),
+            nn.LeakyReLU(),
+            nn.Conv2d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=4,
+                stride=2),
+            nn.LeakyReLU(),
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=64,
+                kernel_size=3,
+                stride=1),
+            nn.LeakyReLU(),
             Flatten(),
-            linear(7 * 7 * 64, 512),
-            nn.ReLU()
+            linear(
+                7 * 7 * 64,
+                512),
+            nn.LeakyReLU(),
         )
         self.actor = linear(512, output_size)
         self.critic = linear(512, 1)
@@ -196,31 +223,39 @@ class CuriosityModel(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
 
-        feature_output = int(576 / 2)
+        feature_output = 7 * 7 * 64
         self.feature = nn.Sequential(
-            nn.Conv2d(4, 32, 3, stride=2, padding=1),
-            nn.ELU(),
-            nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ELU(),
-            nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ELU(),
-            nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ELU(),
-            nn.Conv2d(32, 32, 3, stride=2, padding=1),
-            nn.ELU(),
+            nn.Conv2d(
+                in_channels=4,
+                out_channels=32,
+                kernel_size=8,
+                stride=4),
+            nn.LeakyReLU(),
+            nn.Conv2d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=4,
+                stride=2),
+            nn.LeakyReLU(),
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=64,
+                kernel_size=3,
+                stride=1),
+            nn.LeakyReLU(),
             Flatten(),
         )
 
         self.inverse_net = nn.Sequential(
-            nn.Linear(feature_output + feature_output, 128),
-            nn.ELU(),
-            nn.Linear(128, output_size)
+            nn.Linear(feature_output * 2, 512),
+            nn.LeakyReLU(),
+            nn.Linear(512, output_size)
         )
 
         self.forward_net = nn.Sequential(
-            nn.Linear(output_size + feature_output, 128),
-            nn.ELU(),
-            nn.Linear(128, feature_output)
+            nn.Linear(output_size + feature_output, 512),
+            nn.LeakyReLU(),
+            nn.Linear(512, feature_output)
         )
         for p in self.modules():
             if isinstance(p, nn.Conv2d):
@@ -234,13 +269,14 @@ class CuriosityModel(nn.Module):
     def forward(self, inputs):
         state, next_state, action = inputs
 
+        encode_state = self.feature(state)
         # get pred action
-        pred_action = torch.cat((self.feature(state), self.feature(next_state)), 1)
+        pred_action = torch.cat((encode_state, self.feature(next_state)), 1)
         pred_action = self.inverse_net(pred_action)
         # ---------------------
 
         # get pred next state
-        pred_next_state_feature = torch.cat((self.feature(state), action), 1)
+        pred_next_state_feature = torch.cat((encode_state, action), 1)
         pred_next_state_feature = self.forward_net(pred_next_state_feature)
 
         real_next_state_feature = self.feature(next_state)
