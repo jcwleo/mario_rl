@@ -54,8 +54,8 @@ class CartPoleEnvironment(Process):
                     reward = -1
 
                 self.recent_rlist.append(self.rall)
-                print("[Episode {}({})] Reward: {}  Recent Reward: {}".format(self.episode, self.env_idx, self.rall,
-                                                                              np.mean(self.recent_rlist)))
+                print("[Episode {}({})] Reward: {}  Recent Reward: {}".format(
+                    self.episode, self.env_idx, self.rall, np.mean(self.recent_rlist)))
                 obs = self.reset()
 
             self.child_conn.send([obs, reward, done, info])
@@ -69,8 +69,19 @@ class CartPoleEnvironment(Process):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False, use_noisy_net=False):
-        self.model = BaseActorCriticNetwork(input_size, output_size, use_noisy_net)
+    def __init__(
+            self,
+            input_size,
+            output_size,
+            num_env,
+            num_step,
+            gamma,
+            lam=0.95,
+            use_gae=True,
+            use_cuda=False,
+            use_noisy_net=False):
+        self.model = BaseActorCriticNetwork(
+            input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -78,7 +89,8 @@ class ActorAgent(object):
         self.gamma = gamma
         self.lam = lam
         self.use_gae = use_gae
-        self.optimizer = optim.RMSprop(self.model.parameters(), lr=0.0224, eps=0.1, alpha=0.99)
+        self.optimizer = optim.RMSprop(
+            self.model.parameters(), lr=0.0224, eps=0.1, alpha=0.99)
         self.device = torch.device('cuda' if use_cuda else 'cpu')
         self.model = self.model.to(self.device)
 
@@ -149,7 +161,8 @@ def make_train_data(reward, done, value, next_value):
     if use_gae:
         gae = 0
         for t in range(num_step - 1, -1, -1):
-            delta = reward[t] + gamma * next_value[t] * (1 - done[t]) - value[t]
+            delta = reward[t] + gamma * \
+                next_value[t] * (1 - done[t]) - value[t]
             gae = delta + gamma * lam * (1 - done[t]) * gae
 
             discounted_return[t] = gae + value[t]
@@ -196,8 +209,16 @@ if __name__ == '__main__':
     lam = 0.95
     use_gae = True
 
-    agent = ActorAgent(input_size, output_size, num_worker_per_env * num_worker, num_step, gamma, use_gae=use_gae,
-                       use_cuda=use_cuda, use_noisy_net=use_noisy_net)
+    agent = ActorAgent(
+        input_size,
+        output_size,
+        num_worker_per_env *
+        num_worker,
+        num_step,
+        gamma,
+        use_gae=use_gae,
+        use_cuda=use_cuda,
+        use_noisy_net=use_noisy_net)
     is_render = False
 
     works = []
@@ -239,23 +260,32 @@ if __name__ == '__main__':
 
             states = next_states[:, :]
 
-        total_state = np.stack(total_state).transpose([1, 0, 2]).reshape([-1, input_size])
-        total_next_state = np.stack(total_next_state).transpose([1, 0, 2]).reshape([-1, input_size])
+        total_state = np.stack(total_state).transpose(
+            [1, 0, 2]).reshape([-1, input_size])
+        total_next_state = np.stack(total_next_state).transpose(
+            [1, 0, 2]).reshape([-1, input_size])
         total_reward = np.stack(total_reward).transpose().reshape([-1])
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose().reshape([-1])
 
-        value, next_value = agent.forward_transition(total_state, total_next_state)
+        value, next_value = agent.forward_transition(
+            total_state, total_next_state)
 
         total_target = []
         total_adv = []
         for idx in range(num_worker):
             target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
-                                          total_done[idx * num_step:(idx + 1) * num_step],
-                                          value[idx * num_step:(idx + 1) * num_step],
+                                          total_done[idx *
+                                                     num_step:(idx + 1) * num_step],
+                                          value[idx *
+                                                num_step:(idx + 1) * num_step],
                                           next_value[idx * num_step:(idx + 1) * num_step])
             # print(target.shape)
             total_target.append(target)
             total_adv.append(adv)
 
-        agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+        agent.train_model(
+            total_state,
+            np.hstack(total_target),
+            total_action,
+            np.hstack(total_adv))

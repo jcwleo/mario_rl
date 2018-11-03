@@ -22,7 +22,7 @@ from collections import deque
 from tensorboardX import SummaryWriter
 import gym_super_mario_bros
 from nes_py.wrappers import BinarySpaceToDiscreteSpaceEnv
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT
 
 
 class MarioEnvironment(Process):
@@ -38,7 +38,7 @@ class MarioEnvironment(Process):
         super(MarioEnvironment, self).__init__()
         self.daemon = True
         self.env = BinarySpaceToDiscreteSpaceEnv(
-            gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
+            gym_super_mario_bros.make(env_id), movement)
 
         self.is_render = is_render
         self.env_idx = env_idx
@@ -78,16 +78,39 @@ class MarioEnvironment(Process):
 
             # reward range -15 ~ 15
             log_reward = reward / 15
-            self.rall += reward
+            self.rall += log_reward
 
             if use_icm:
                 if info['flag_get'] or self.stage < info['stage']:
-                    r = 10.
-                    self.stage = info['stage']
-                elif force_done:
-                    r = -10.
-                else:
                     r = 0.
+                    self.stage = info['stage']
+                # elif force_done:
+                #     r = -1.
+                else:
+                    # reward
+                    if self.max_pos < info['x_pos']:
+                        self.max_pos = info['x_pos']
+                        if self.max_pos % 100 == 0:
+                            r = 1
+                    if force_done:
+                        self.max_pos = 0
+                    r = 0.
+
+            else:
+                if info['flag_get'] or self.stage < info['stage']:
+                    r = 5.
+                    self.stage = info['stage']
+
+                #r = 0
+                # if self.max_pos < info['x_pos']:
+                #    self.max_pos = info['x_pos']
+                #    if self.max_pos % 100 == 0:
+                #        r = 1.
+                # if force_done:
+                #    self.max_pos = 0
+                r = log_reward
+                if force_done:
+                    r = -10
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
@@ -96,13 +119,25 @@ class MarioEnvironment(Process):
 
             if done:
                 self.recent_rlist.append(self.rall)
-                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}".format(
-                    self.episode, self.env_idx, self.steps, self.rall, np.mean(self.recent_rlist)))
+                print(
+                    "[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}  Stage: {} current x:{}   max x:{}".format(
+                        self.episode,
+                        self.env_idx,
+                        self.steps,
+                        self.rall,
+                        np.mean(
+                            self.recent_rlist),
+                        info['stage'],
+                        info['x_pos'],
+                        self.max_pos))
 
                 self.history = self.reset()
-
-            self.child_conn.send(
-                [self.history[:, :, :], r, force_done, done, log_reward])
+            if use_icm:
+                self.child_conn.send(
+                    [self.history[:, :, :], r, False, done, log_reward])
+            else:
+                self.child_conn.send(
+                    [self.history[:, :, :], r, False, done, log_reward])
 
     def reset(self):
         self.steps = 0
@@ -110,6 +145,7 @@ class MarioEnvironment(Process):
         self.rall = 0
         self.lives = 3
         self.stage = 1
+        self.max_pos = 0
         self.get_init_state(self.env.reset())
         return self.history[:, :, :]
 
@@ -191,7 +227,8 @@ class ActorAgent(object):
         real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
             [state, next_state, action_onehot])
         intrinsic_reward = eta * \
-            ((real_next_state_feature - pred_next_state_feature).pow(2)).sum(1) / 2.
+            (real_next_state_feature - pred_next_state_feature).pow(2).sum(1) / 2
+        # return np.clip(intrinsic_reward.data.cpu().numpy(), 0, 1)
         return intrinsic_reward.data.cpu().numpy()
 
     @staticmethod
@@ -220,64 +257,83 @@ class ActorAgent(object):
             target_batch,
             y_batch,
             adv_batch):
-        with torch.no_grad():
-            s_batch = torch.FloatTensor(s_batch).to(self.device)
-            next_s_batch = torch.FloatTensor(next_s_batch).to(self.device)
-            target_batch = torch.FloatTensor(target_batch).to(self.device)
-            y_batch = torch.LongTensor(y_batch).to(self.device)
-            adv_batch = torch.FloatTensor(adv_batch).to(self.device)
+        s_batch = torch.FloatTensor(s_batch).to(self.device)
+        next_s_batch = torch.FloatTensor(next_s_batch).to(self.device)
+        target_batch = torch.FloatTensor(target_batch).to(self.device)
+        y_batch = torch.LongTensor(y_batch).to(self.device)
+        adv_batch = torch.FloatTensor(adv_batch).to(self.device)
 
-        if use_standardization:
-            adv_batch = (adv_batch - adv_batch.mean()) / \
-                (adv_batch.std() + stable_eps)
-
+        sample_range = np.arange(len(s_batch))
         ce = nn.CrossEntropyLoss()
-        # mse = nn.SmoothL1Loss()
         forward_mse = nn.MSELoss()
-        # --------------------------------------------------------------------------------
+        self.model.train()
         if use_icm:
-            # for Curiosity-driven
-            action_onehot = torch.FloatTensor(
-                len(s_batch), self.output_size).to(
-                self.device)
-            action_onehot.zero_()
-            action_onehot.scatter_(1, y_batch.view(len(y_batch), -1), 1)
+            self.icm.train()
 
-            real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
-                [s_batch, next_s_batch, action_onehot])
+        with torch.no_grad():
+            # for multiply advantage
+            policy_old, value_old = self.model(s_batch)
+            m_old = Categorical(F.softmax(policy_old, dim=-1))
+            log_prob_old = m_old.log_prob(y_batch)
 
-            inverse_loss = ce(pred_action, y_batch)
-            forward_loss = forward_mse(
-                real_next_state_feature,
-                pred_next_state_feature)
+        for i in range(epoch):
+            np.random.shuffle(sample_range)
+            for j in range(int(len(s_batch) / batch_size)):
+                sample_idx = sample_range[batch_size * j:batch_size * (j + 1)]
 
-        # --------------------------------------------------------------------------------
-        # for multiply advantage
-        policy, value = self.model(s_batch)
-        m = Categorical(F.softmax(policy, dim=-1))
+                # --------------------------------------------------------------------------------
+                if use_icm:
+                    # for Curiosity-driven
+                    action_onehot = torch.FloatTensor(
+                        len(s_batch[sample_idx]), self.output_size).to(self.device)
+                    action_onehot.zero_()
+                    action_onehot.scatter_(1, y_batch.view(
+                        len(y_batch[sample_idx]), -1), 1)
 
-        # Actor loss
-        actor_loss = -m.log_prob(y_batch) * adv_batch
+                    real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
+                        [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
+                    # print(pred_action)
+                    inverse_loss = ce(
+                        pred_action, y_batch[sample_idx].detach())
+                    forward_loss = forward_mse(
+                        pred_next_state_feature, real_next_state_feature.detach())
+                # ---------------------------------------------------------------------------------
 
-        # Entropy(for more exploration)
-        entropy = m.entropy()
+                policy, value = self.model(s_batch[sample_idx])
+                m = Categorical(F.softmax(policy, dim=-1))
+                log_prob = m.log_prob(y_batch[sample_idx])
 
-        # Critic loss
-        mse = nn.MSELoss()
-        critic_loss = mse(value.sum(1), target_batch)
+                ratio = torch.exp(log_prob - log_prob_old[sample_idx])
 
-        self.optimizer.zero_grad()
+                surr1 = ratio * adv_batch[sample_idx]
+                surr2 = torch.clamp(
+                    ratio,
+                    1.0 - ppo_eps,
+                    1.0 + ppo_eps) * adv_batch[sample_idx]
 
-        # Total loss
-        if use_icm:
-            loss = lamb * (actor_loss.mean() + 0.5 * critic_loss) + \
-                (1 - beta) * inverse_loss + beta * forward_loss
-        else:
-            loss = actor_loss.mean() + 0.5 * critic_loss - entropy_coef * entropy.mean()
+                actor_loss = -torch.min(surr1, surr2).mean()
+                critic_loss = F.mse_loss(
+                    value.sum(1), target_batch[sample_idx])
+                entropy = m.entropy().mean()
 
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
-        self.optimizer.step()
+                self.optimizer.zero_grad()
+                if use_icm:
+                    loss = (actor_loss + 0.5 * critic_loss) + icm_scale * \
+                        ((1 - beta) * inverse_loss + beta * forward_loss)
+                else:
+                    loss = actor_loss + 0.5 * critic_loss - entropy_coef * entropy
+                loss.backward()
+                if use_icm:
+                    torch.nn.utils.clip_grad_norm_(
+                        list(
+                            self.model.parameters()) +
+                        list(
+                            self.icm.parameters()),
+                        clip_grad_norm)
+                else:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), clip_grad_norm)
+                self.optimizer.step()
 
 
 def make_train_data(reward, done, value, next_value):
@@ -307,41 +363,86 @@ def make_train_data(reward, done, value, next_value):
     return discounted_return, adv
 
 
+class RunningMeanStd(object):
+    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    def __init__(self, epsilon=1e-4, shape=()):
+        self.mean = np.zeros(shape, 'float64')
+        self.var = np.ones(shape, 'float64')
+        self.count = epsilon
+
+    def update(self, x):
+        batch_mean = np.mean(x, axis=0)
+        batch_var = np.var(x, axis=0)
+        batch_count = x.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        delta = batch_mean - self.mean
+        tot_count = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / tot_count
+        m_a = self.var * (self.count)
+        m_b = batch_var * (batch_count)
+        M2 = m_a + m_b + np.square(delta) * self.count * \
+            batch_count / (self.count + batch_count)
+        new_var = M2 / (self.count + batch_count)
+
+        new_count = batch_count + self.count
+
+        self.mean = new_mean
+        self.var = new_var
+        self.count = new_count
+
+
+class RewardForwardFilter(object):
+    def __init__(self, gamma):
+        self.rewems = None
+        self.gamma = gamma
+
+    def update(self, rews):
+        if self.rewems is None:
+            self.rewems = rews
+        else:
+            self.rewems = self.rewems * self.gamma + rews
+        return self.rewems
+
+
 if __name__ == '__main__':
     env_id = 'SuperMarioBros-v0'
+    movement = COMPLEX_MOVEMENT
     env = BinarySpaceToDiscreteSpaceEnv(
-        gym_super_mario_bros.make(env_id), SIMPLE_MOVEMENT)
+        gym_super_mario_bros.make(env_id), movement)
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
 
     env.close()
 
     writer = SummaryWriter()
-    use_cuda = False
+    use_cuda = True
     use_gae = True
     life_done = True
 
     is_load_model = False
     is_training = True
 
-    is_render = True
+    is_render = False
     use_standardization = True
-    use_noisy_net = True
+    use_noisy_net = False
     use_icm = True
 
     model_path = 'models/{}_{}.model'.format(env_id,
                                              datetime.date.today().isoformat())
-    load_model_path = 'models/SuperMarioBros-v2_2018-09-18.model'
+    load_model_path = 'models/SuperMarioBros-v0_2018-09-26.model'
 
     lam = 0.95
     num_worker = 16
-    num_step = 5
+    num_step = 128
+    ppo_eps = 0.1
+    epoch = 3
+    batch_size = 256
     max_step = 1.15e8
 
-    if use_icm:
-        learning_rate = 0.001
-    else:
-        learning_rate = 0.00025
+    learning_rate = 0.0001
     lr_schedule = False
 
     stable_eps = 1e-30
@@ -351,9 +452,10 @@ if __name__ == '__main__':
     clip_grad_norm = 0.5
 
     # Curiosity param
-    lamb = 0.1
+    icm_scale = 10.0
     beta = 0.2
-    eta = 0.01
+    eta = 1.0
+    reward_scale = 1
 
     agent = ActorAgent(
         input_size,
@@ -363,6 +465,8 @@ if __name__ == '__main__':
         gamma,
         use_cuda=use_cuda,
         use_noisy_net=use_noisy_net)
+    reward_rms = RunningMeanStd()
+    discounted_reward = RewardForwardFilter(gamma)
 
     if is_load_model:
         if use_cuda:
@@ -391,6 +495,7 @@ if __name__ == '__main__':
 
     sample_episode = 0
     sample_rall = 0
+    sample_i_rall = 0
     sample_step = 0
     sample_env_idx = 0
     global_step = 0
@@ -403,6 +508,12 @@ if __name__ == '__main__':
         for _ in range(num_step):
             if not is_training:
                 time.sleep(0.05)
+
+            agent.model.eval()
+
+            if use_icm:
+                agent.icm.eval()
+
             actions = agent.get_action(states)
 
             for parent_conn, action in zip(parent_conns, actions):
@@ -418,7 +529,7 @@ if __name__ == '__main__':
                 log_rewards.append(lr)
 
             next_states = np.stack(next_states)
-            rewards = np.hstack(rewards)
+            rewards = np.hstack(rewards) * reward_scale
             dones = np.hstack(dones)
             real_dones = np.hstack(real_dones)
 
@@ -436,12 +547,18 @@ if __name__ == '__main__':
             states = next_states[:, :, :, :]
 
             sample_rall += log_rewards[sample_env_idx]
+            if use_icm:
+                sample_i_rall += intrinsic_reward[sample_env_idx]
             sample_step += 1
             if real_dones[sample_env_idx]:
                 sample_episode += 1
                 writer.add_scalar('data/reward', sample_rall, sample_episode)
+                if use_icm:
+                    writer.add_scalar(
+                        'data/i-reward', sample_i_rall, sample_episode)
                 writer.add_scalar('data/step', sample_step, sample_episode)
                 sample_rall = 0
+                sample_i_rall = 0
                 sample_step = 0
 
         if is_training:
@@ -455,6 +572,14 @@ if __name__ == '__main__':
 
             value, next_value, policy = agent.forward_transition(
                 total_state, total_next_state)
+            if use_icm:
+                total_reward_per_env = np.array([discounted_reward.update(
+                    reward_per_step) for reward_per_step in total_reward.reshape([num_worker, -1]).T])
+                total_reawrd_per_env = total_reward_per_env.reshape([-1])
+                mean, std, count = np.mean(total_reward), np.std(
+                    total_reward), len(total_reward)
+                reward_rms.update_from_moments(mean, std ** 2, count)
+                total_reward /= np.sqrt(reward_rms.var)
 
             # logging utput to see how convergent it is.
             policy = policy.detach()
@@ -476,6 +601,9 @@ if __name__ == '__main__':
                                               next_value[idx * num_step:(idx + 1) * num_step])
                 total_target.append(target)
                 total_adv.append(adv)
+
+            if use_standardization:
+                adv = (adv - adv.mean()) / (adv.std() + stable_eps)
 
             agent.train_model(
                 total_state,
