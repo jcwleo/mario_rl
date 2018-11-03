@@ -1,4 +1,3 @@
-import ray
 import gym
 import os
 import random
