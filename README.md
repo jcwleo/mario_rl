@@ -41,6 +41,7 @@ python3 mario_ppo.py
 ## 4. Loss/Reward Graph
 **It use just A2C(PAAC)**
 ![image](https://user-images.githubusercontent.com/23333028/45729323-f6b9d680-bc06-11e8-9844-cc9b1433928d.png)
+
 -----------
 **It use just ICM and no ext reward.(Curiosity-driven)**
 ![image](https://user-images.githubusercontent.com/23333028/47946779-c4183300-df53-11e8-824d-bf8be02d61a7.png)
