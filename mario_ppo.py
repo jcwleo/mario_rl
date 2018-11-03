@@ -152,7 +152,7 @@ class ActorAgent(object):
         self.lam = lam
         self.use_gae = use_gae
         self.optimizer = optim.Adam(
-                self.model.parameters(), lr=learning_rate)
+            self.model.parameters(), lr=learning_rate)
 
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -238,7 +238,7 @@ class ActorAgent(object):
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), clip_grad_norm)
+                    self.model.parameters(), clip_grad_norm)
                 self.optimizer.step()
 
 
