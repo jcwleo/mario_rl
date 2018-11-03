@@ -22,7 +22,15 @@ from tensorboardX import SummaryWriter
 
 
 class AtariEnvironment(Process):
-    def __init__(self, env_id, is_render, env_idx, child_conn, history_size=4, h=84, w=84):
+    def __init__(
+            self,
+            env_id,
+            is_render,
+            env_idx,
+            child_conn,
+            history_size=4,
+            h=84,
+            w=84):
         super(AtariEnvironment, self).__init__()
         self.daemon = True
         self.env = gym.make(env_id)
@@ -65,20 +73,21 @@ class AtariEnvironment(Process):
                 force_done = done
 
             self.history[:3, :, :] = self.history[1:, :, :]
-            self.history[3, :, :] = self.pre_proc(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
+            self.history[3, :, :] = self.pre_proc(
+                self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
 
             self.rall += reward
             self.steps += 1
 
             if done:
                 self.recent_rlist.append(self.rall)
-                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}".format(self.episode, self.env_idx,
-                                                                                        self.steps, self.rall,
-                                                                                        np.mean(self.recent_rlist)))
+                print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}".format(
+                    self.episode, self.env_idx, self.steps, self.rall, np.mean(self.recent_rlist)))
 
                 self.history = self.reset()
 
-            self.child_conn.send([self.history[:, :, :], reward, force_done, done])
+            self.child_conn.send(
+                [self.history[:, :, :], reward, force_done, done])
 
     def reset(self):
         self.steps = 0
@@ -86,7 +95,8 @@ class AtariEnvironment(Process):
         self.rall = 0
         self.env.reset()
         self.lives = self.env.env.ale.lives()
-        self.get_init_state(self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
+        self.get_init_state(
+            self.env.env.ale.getScreenGrayscale().squeeze().astype('float32'))
         return self.history[:, :, :]
 
     def pre_proc(self, X):
@@ -101,9 +111,19 @@ class AtariEnvironment(Process):
 
 
 class ActorAgent(object):
-    def __init__(self, input_size, output_size, num_env, num_step, gamma, lam=0.95, use_gae=True, use_cuda=False,
-                 use_noisy_net=False):
-        self.model = CnnActorCriticNetwork(input_size, output_size, use_noisy_net)
+    def __init__(
+            self,
+            input_size,
+            output_size,
+            num_env,
+            num_step,
+            gamma,
+            lam=0.95,
+            use_gae=True,
+            use_cuda=False,
+            use_noisy_net=False):
+        self.model = CnnActorCriticNetwork(
+            input_size, output_size, use_noisy_net)
         self.num_env = num_env
         self.output_size = output_size
         self.input_size = input_size
@@ -155,9 +175,6 @@ class ActorAgent(object):
 
         sample_range = np.arange(len(s_batch))
 
-        if use_standardization:
-            adv_batch = (adv_batch - adv_batch.mean()) / (adv_batch.std() + stable_eps)
-
         with torch.no_grad():
             # for multiply advantage
             policy_old, value_old = self.model(s_batch)
@@ -175,15 +192,20 @@ class ActorAgent(object):
                 ratio = torch.exp(log_prob - log_prob_old[sample_idx])
 
                 surr1 = ratio * adv_batch[sample_idx]
-                surr2 = torch.clamp(ratio, 1.0 - ppo_eps, 1.0 + ppo_eps) * adv_batch[sample_idx]
+                surr2 = torch.clamp(
+                    ratio,
+                    1.0 - ppo_eps,
+                    1.0 + ppo_eps) * adv_batch[sample_idx]
 
                 actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = F.mse_loss(value.sum(1), target_batch[sample_idx])
+                critic_loss = F.mse_loss(
+                    value.sum(1), target_batch[sample_idx])
 
                 self.optimizer.zero_grad()
                 loss = actor_loss + critic_loss
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), clip_grad_norm)
                 self.optimizer.step()
 
 
@@ -194,7 +216,8 @@ def make_train_data(reward, done, value, next_value):
     if use_gae:
         gae = 0
         for t in range(num_step - 1, -1, -1):
-            delta = reward[t] + gamma * next_value[t] * (1 - done[t]) - value[t]
+            delta = reward[t] + gamma * \
+                next_value[t] * (1 - done[t]) - value[t]
             gae = delta + gamma * lam * (1 - done[t]) * gae
 
             discounted_return[t] = gae + value[t]
@@ -209,6 +232,9 @@ def make_train_data(reward, done, value, next_value):
 
         # For Actor
         adv = discounted_return - value
+
+    if use_standardization:
+        adv = (adv - adv.mean()) / (adv.std() + stable_eps)
 
     return discounted_return, adv
 
@@ -229,7 +255,7 @@ if __name__ == '__main__':
     use_gae = True
     is_load_model = False
     is_render = False
-    use_standardization = False
+    use_standardization = True
     lr_schedule = False
     life_done = True
     use_noisy_net = True
@@ -242,10 +268,10 @@ if __name__ == '__main__':
     num_step = 128
     ppo_eps = 0.1
     epoch = 3
-    batch_size = 32 * num_worker
+    batch_size = 32
     max_step = 1.15e8
 
-    learning_rate = 0.0001
+    learning_rate = 0.00025
 
     stable_eps = 1e-30
     epslion = 0.1
@@ -254,8 +280,15 @@ if __name__ == '__main__':
     gamma = 0.99
     clip_grad_norm = 0.5
 
-    agent = ActorAgent(input_size, output_size, num_worker, num_step, gamma, use_cuda=use_cuda,
-                       use_gae=use_gae, use_noisy_net=use_noisy_net)
+    agent = ActorAgent(
+        input_size,
+        output_size,
+        num_worker,
+        num_step,
+        gamma,
+        use_cuda=use_cuda,
+        use_gae=use_gae,
+        use_noisy_net=use_noisy_net)
 
     if is_load_model:
         agent.model.load_state_dict(torch.load(model_path))
@@ -320,35 +353,48 @@ if __name__ == '__main__':
                 sample_rall = 0
                 sample_step = 0
 
-        total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_state = np.stack(total_state).transpose(
+            [1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_next_state = np.stack(total_next_state).transpose(
+            [1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
         total_reward = np.stack(total_reward).transpose().reshape([-1])
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose().reshape([-1])
 
-        value, next_value, policy = agent.forward_transition(total_state, total_next_state)
+        value, next_value, policy = agent.forward_transition(
+            total_state, total_next_state)
 
         policy = policy.detach()
         m = F.softmax(policy, dim=-1)
         recent_prob.append(m.max(1)[0].mean().cpu().numpy())
-        writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
+        writer.add_scalar(
+            'data/max_prob',
+            np.mean(recent_prob),
+            sample_episode)
 
         total_target = []
         total_adv = []
         for idx in range(num_worker):
             target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
-                                          total_done[idx * num_step:(idx + 1) * num_step],
-                                          value[idx * num_step:(idx + 1) * num_step],
+                                          total_done[idx *
+                                                     num_step:(idx + 1) * num_step],
+                                          value[idx *
+                                                num_step:(idx + 1) * num_step],
                                           next_value[idx * num_step:(idx + 1) * num_step])
             # print(target.shape)
             total_target.append(target)
             total_adv.append(adv)
 
-        agent.train_model(total_state, np.hstack(total_target), total_action, np.hstack(total_adv))
+        agent.train_model(
+            total_state,
+            np.hstack(total_target),
+            total_action,
+            np.hstack(total_adv))
 
         # adjust learning rate
         if lr_schedule:
-            new_learing_rate = learning_rate - (global_step / max_step) * learning_rate
+            new_learing_rate = learning_rate - \
+                (global_step / max_step) * learning_rate
             for param_group in agent.optimizer.param_groups:
                 param_group['lr'] = new_learing_rate
                 writer.add_scalar('data/lr', new_learing_rate, sample_episode)
