@@ -59,6 +59,9 @@ def main():
     icm_scale = float(icm_config['ICMScale'])
     eta = float(icm_config['ETA'])
 
+    reward_rms = RunningMeanStd()
+    discounted_reward = RewardForwardFilter(gamma)
+
     if train_method == 'PPO':
         agent = PPOAgent
     elif train_method == 'ICM':
@@ -180,6 +183,18 @@ def main():
 
         value, next_value, policy = agent.forward_transition(
             total_state, total_next_state)
+
+        if train_method == 'ICM':
+            # running mean int reward
+            total_reward_per_env = np.array([discounted_reward.update(
+                reward_per_step) for reward_per_step in total_reward.reshape([num_worker, -1]).T])
+            total_reawrd_per_env = total_reward_per_env.reshape([-1])
+            mean, std, count = np.mean(total_reawrd_per_env), np.std(
+                total_reawrd_per_env), len(total_reawrd_per_env)
+            reward_rms.update_from_moments(mean, std ** 2, count)
+
+            # devided reward by running std
+            total_reward /= np.sqrt(reward_rms.var)
 
         policy = policy.detach()
         m = F.softmax(policy, dim=-1)
