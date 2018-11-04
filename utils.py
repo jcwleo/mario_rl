@@ -18,8 +18,7 @@ def make_train_data(reward, done, value, next_value):
     if use_gae:
         gae = 0
         for t in range(num_step - 1, -1, -1):
-            delta = reward[t] + gamma * \
-                    next_value[t] * (1 - done[t]) - value[t]
+            delta = reward[t] + gamma * next_value[t] * (1 - done[t]) - value[t]
             gae = delta + gamma * lam * (1 - done[t]) * gae
 
             discounted_return[t] = gae + value[t]
@@ -58,8 +57,7 @@ class RunningMeanStd(object):
         new_mean = self.mean + delta * batch_count / tot_count
         m_a = self.var * (self.count)
         m_b = batch_var * (batch_count)
-        M2 = m_a + m_b + np.square(delta) * self.count * \
-             batch_count / (self.count + batch_count)
+        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / (self.count + batch_count)
         new_var = M2 / (self.count + batch_count)
 
         new_count = batch_count + self.count

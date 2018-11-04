@@ -1,11 +1,8 @@
-import gym
-
-from model import *
 from agents import *
 from envs import *
 from utils import *
 from config import *
-from torch.multiprocessing import Pipe, Process
+from torch.multiprocessing import Pipe
 
 from collections import deque
 
@@ -186,11 +183,9 @@ def main():
 
         if train_method == 'ICM':
             # running mean int reward
-            total_reward_per_env = np.array([discounted_reward.update(
-                reward_per_step) for reward_per_step in total_reward.reshape([num_worker, -1]).T])
-            total_reawrd_per_env = total_reward_per_env.reshape([-1])
-            mean, std, count = np.mean(total_reawrd_per_env), np.std(
-                total_reawrd_per_env), len(total_reawrd_per_env)
+            total_reward_per_env = np.array([discounted_reward.update(reward_per_step) for reward_per_step in
+                                             total_reward.reshape([num_worker, -1]).T])
+            mean, std, count = np.mean(total_reward_per_env), np.std(total_reward_per_env), len(total_reawrd_per_env)
             reward_rms.update_from_moments(mean, std ** 2, count)
 
             # devided reward by running std
@@ -205,12 +200,10 @@ def main():
         total_adv = []
         for idx in range(num_worker):
             target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
-                                          total_done[idx *
-                                                     num_step:(idx + 1) * num_step],
-                                          value[idx *
-                                                num_step:(idx + 1) * num_step],
+                                          total_done[idx * num_step:(idx + 1) * num_step],
+                                          value[idx * num_step:(idx + 1) * num_step],
                                           next_value[idx * num_step:(idx + 1) * num_step])
-            # print(target.shape)
+
             total_target.append(target)
             total_adv.append(adv)
 

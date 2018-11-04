@@ -130,10 +130,18 @@ class PPOAgent(A2CAgent):
         sample_range = np.arange(len(s_batch))
 
         with torch.no_grad():
-            # for multiply advantage
-            policy_old, value_old = self.model(s_batch)
-            m_old = Categorical(F.softmax(policy_old, dim=-1))
+            # ------------------------------------------------------------
+            # Calculate old policy
+            policy_old_list = []
+            for i in range(int(len(s_batch) / self.batch_size)):
+                policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
+                policy_old_list.extend(policy_old)
+
+            policy_old_list = torch.Tensor(policy_old_list)
+
+            m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)
+            # ------------------------------------------------------------
 
         for i in range(self.epoch):
             np.random.shuffle(sample_range)
@@ -152,14 +160,12 @@ class PPOAgent(A2CAgent):
                     1.0 + self.ppo_eps) * adv_batch[sample_idx]
 
                 actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = F.mse_loss(
-                    value.sum(1), target_batch[sample_idx])
+                critic_loss = F.mse_loss(value.sum(1), target_batch[sample_idx])
 
                 self.optimizer.zero_grad()
                 loss = actor_loss + critic_loss
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.clip_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 self.optimizer.step()
 
 
@@ -177,8 +183,7 @@ class ICMAgent(PPOAgent):
 
         real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
             [state, next_state, action_onehot])
-        intrinsic_reward = self.eta * \
-                           (real_next_state_feature - pred_next_state_feature).pow(2).sum(1) / 2
+        intrinsic_reward = self.eta * (real_next_state_feature - pred_next_state_feature).pow(2).sum(1) / 2
 
         return intrinsic_reward.data.cpu().numpy()
 
@@ -208,16 +213,16 @@ class ICMAgent(PPOAgent):
 
                 # --------------------------------------------------------------------------------
                 # for Curiosity-driven
-                action_onehot = torch.FloatTensor(
-                    len(s_batch[sample_idx]), self.output_size).to(self.device)
+                action_onehot = torch.FloatTensor(len(s_batch[sample_idx]), self.output_size).to(self.device)
                 action_onehot.zero_()
-                action_onehot.scatter_(1, y_batch.view(
-                    len(y_batch[sample_idx]), -1), 1)
+                action_onehot.scatter_(1, y_batch.view(len(y_batch[sample_idx]), -1), 1)
 
                 real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
                     [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
+
                 inverse_loss = ce(
                     pred_action, y_batch[sample_idx].detach())
+
                 forward_loss = forward_mse(
                     pred_next_state_feature, real_next_state_feature.detach())
                 # ---------------------------------------------------------------------------------
