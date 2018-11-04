@@ -30,6 +30,7 @@ def main():
     is_load_model = False
     is_render = False
     model_path = 'models/{}.model'.format(env_id)
+    icm_path = 'models/{}.icm'.format(env_id)
 
     writer = SummaryWriter()
 
@@ -199,8 +200,8 @@ def main():
 
         if global_step % (num_worker * num_step * 100) == 0:
             torch.save(agent.model.state_dict(), model_path)
-
-    pass
+            if train_method == 'ICM':
+                torch.save(agent.icm.state_dict(), icm_path)
 
 
 if __name__ == '__main__':
