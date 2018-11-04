@@ -1,7 +1,7 @@
 import configparser
 
 config = configparser.ConfigParser()
-config.read('config.conf')
+config.read('./config.conf')
 
 # ---------------------------------
 default = 'DEFAULT'

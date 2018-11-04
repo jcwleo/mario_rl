@@ -115,6 +115,7 @@ def main():
     sample_rall = 0
     sample_step = 0
     sample_env_idx = 0
+    sample_i_rall = 0
     global_step = 0
     recent_prob = deque(maxlen=10)
 
@@ -146,6 +147,7 @@ def main():
                 intrinsic_reward = agent.compute_intrinsic_reward(
                     states, next_states, actions)
                 rewards += intrinsic_reward
+                sample_i_rall += intrinsic_reward[sample_env_idx]
 
             total_state.append(states)
             total_next_state.append(next_states)
@@ -156,13 +158,17 @@ def main():
             states = next_states[:, :, :, :]
 
             sample_rall += rewards[sample_env_idx]
+
             sample_step += 1
             if real_dones[sample_env_idx]:
                 sample_episode += 1
                 writer.add_scalar('data/reward', sample_rall, sample_episode)
                 writer.add_scalar('data/step', sample_step, sample_episode)
+                if train_method == 'ICM':
+                    writer.add_scalar('data/int_reward', sample_i_rall, sample_episode)
                 sample_rall = 0
                 sample_step = 0
+                sample_i_rall = 0
 
         total_state = np.stack(total_state).transpose(
             [1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
