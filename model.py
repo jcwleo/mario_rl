@@ -6,8 +6,6 @@ import numpy as np
 import math
 from torch.nn import init
 
-from torch.distributions.categorical import Categorical
-
 
 class NoisyLinear(nn.Module):
     """Factorised Gaussian NoisyNet"""
@@ -64,8 +62,8 @@ class NoisyLinear(nn.Module):
 
     def __repr__(self):
         return self.__class__.__name__ + '(' \
-            + 'in_features=' + str(self.in_features) \
-            + ', out_features=' + str(self.out_features) + ')'
+               + 'in_features=' + str(self.in_features) \
+               + ', out_features=' + str(self.out_features) + ')'
 
 
 class Flatten(nn.Module):
