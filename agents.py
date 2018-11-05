@@ -28,6 +28,7 @@ class A2CAgent(object):
             beta=0.2,
             icm_scale=10.0,
             eta=0.01,
+            rnd_gamma=0.99,
             use_gae=True,
             use_cuda=False,
             use_noisy_net=False,
@@ -48,6 +49,7 @@ class A2CAgent(object):
         self.icm, self.rnd = None, None
         self.beta = beta
         self.eta = eta
+        self.rnd_gamma = rnd_gamma
         self.icm_scale = icm_scale
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
