@@ -7,7 +7,7 @@ import torch.optim as optim
 
 from torch.distributions.categorical import Categorical
 
-from model import CuriosityModel, CnnActorCriticNetwork
+from model import CuriosityModel, CnnActorCriticNetwork, RNDModel
 
 
 class A2CAgent(object):
@@ -45,7 +45,7 @@ class A2CAgent(object):
         self.ent_coef = ent_coef
         self.ppo_eps = ppo_eps
         self.clip_grad_norm = clip_grad_norm
-        self.icm = None
+        self.icm, self.rnd = None, None
         self.beta = beta
         self.eta = eta
         self.icm_scale = icm_scale
@@ -55,6 +55,11 @@ class A2CAgent(object):
             self.icm = CuriosityModel(input_size, output_size)
             self.optimizer = optim.Adam(list(self.model.parameters()) + list(self.icm.parameters()), lr=learning_rate)
             self.icm = self.icm.to(self.device)
+        elif train_method == 'RND':
+            self.rnd = RNDModel(input_size, output_size)
+            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+            self.rnd_optimizer = optim.Adam(self.rnd.predictor.parameters(), lr=learning_rate)
+            self.rnd = self.rnd.to(self.device)
         else:
             self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
@@ -201,10 +206,18 @@ class ICMAgent(PPOAgent):
         self.icm.train()
 
         with torch.no_grad():
-            # for multiply advantage
-            policy_old, value_old = self.model(s_batch)
-            m_old = Categorical(F.softmax(policy_old, dim=-1))
+            # ------------------------------------------------------------
+            # Calculate old policy
+            policy_old_list = []
+            for i in range(int(len(s_batch) / self.batch_size)):
+                policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
+                policy_old_list.extend(policy_old)
+
+            policy_old_list = torch.Tensor(policy_old_list)
+
+            m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)
+            # ------------------------------------------------------------
 
         for i in range(self.epoch):
             np.random.shuffle(sample_range)
@@ -253,3 +266,81 @@ class ICMAgent(PPOAgent):
                     list(self.icm.parameters()),
                     self.clip_grad_norm)
                 self.optimizer.step()
+
+
+class RNDAgent(PPOAgent):
+    def compute_intrinsic_reward(self, next_state):
+        next_state = torch.FloatTensor(next_state).to(self.device)
+
+        target_next_feature = self.rnd.target(next_state)
+        predict_next_feature = self.rnd.predictor(next_state)
+        intrinsic_reward = self.eta * (target_next_feature - predict_next_feature).pow(2).sum(1) / 2
+
+        return intrinsic_reward.data.cpu().numpy()
+
+    def train_model(self, s_batch, next_s_batch, target_batch, y_batch, adv_batch):
+        s_batch = torch.FloatTensor(s_batch).to(self.device)
+        next_s_batch = torch.FloatTensor(next_s_batch).to(self.device)
+        target_batch = torch.FloatTensor(target_batch).to(self.device)
+        y_batch = torch.LongTensor(y_batch).to(self.device)
+        adv_batch = torch.FloatTensor(adv_batch).to(self.device)
+
+        sample_range = np.arange(len(s_batch))
+        ce = nn.CrossEntropyLoss()
+        forward_mse = nn.MSELoss()
+        self.model.train()
+        self.rnd.train()
+
+        with torch.no_grad():
+            # ------------------------------------------------------------
+            # Calculate old policy
+            policy_old_list = []
+            for i in range(int(len(s_batch) / self.batch_size)):
+                policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
+                policy_old_list.extend(policy_old)
+
+            policy_old_list = torch.Tensor(policy_old_list)
+
+            m_old = Categorical(F.softmax(policy_old_list, dim=-1))
+            log_prob_old = m_old.log_prob(y_batch)
+            # ------------------------------------------------------------
+
+        for i in range(self.epoch):
+            np.random.shuffle(sample_range)
+            for j in range(int(len(s_batch) / self.batch_size)):
+                sample_idx = sample_range[self.batch_size * j:self.batch_size * (j + 1)]
+
+                # --------------------------------------------------------------------------------
+                # for Curiosity-driven(Random Network Distillation)
+                predict_next_state_feature, target_next_state_feature = self.rnd(next_s_batch[sample_idx])
+
+                forward_loss = forward_mse(predict_next_state_feature, target_next_state_feature.detach())
+                # ---------------------------------------------------------------------------------
+
+                policy, value = self.model(s_batch[sample_idx])
+                m = Categorical(F.softmax(policy, dim=-1))
+                log_prob = m.log_prob(y_batch[sample_idx])
+
+                ratio = torch.exp(log_prob - log_prob_old[sample_idx])
+
+                surr1 = ratio * adv_batch[sample_idx]
+                surr2 = torch.clamp(
+                ratio,
+                1.0 - self.ppo_eps,
+                1.0 + self.ppo_eps) *adv_batch[sample_idx]
+
+                actor_loss = -torch.min(surr1, surr2).mean()
+                critic_loss = F.mse_loss(
+                value.sum(1), target_batch[sample_idx])
+                entropy = m.entropy().mean()
+
+                self.optimizer.zero_grad()
+                loss = actor_loss + 0.5 * critic_loss - self.ent_coef * entropy
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
+                self.optimizer.step()
+
+                self.rnd_optimizer.zero_grad()
+                rnd_loss = forward_loss
+                rnd_loss.backward()
+                self.rnd_optimizer.step()
