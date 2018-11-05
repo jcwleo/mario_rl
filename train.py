@@ -38,7 +38,7 @@ def main():
 
     lam = float(default_config['Lambda'])
     num_worker = int(default_config['NumEnv'])
-    if train_method in ['PPO', 'ICM']:
+    if train_method in ['PPO', 'ICM', 'RND']:
         num_step = int(ppo_config['NumStep'])
     else:
         num_step = int(default_config['NumStep'])
@@ -63,6 +63,8 @@ def main():
         agent = PPOAgent
     elif train_method == 'ICM':
         agent = ICMAgent
+    elif train_method == 'RND':
+        agent = RNDAgent
     else:
         agent = A2CAgent
 
@@ -143,7 +145,7 @@ def main():
             real_dones = np.hstack(real_dones)
 
             # total reward = int reward + ext Resard
-            if train_method == 'ICM':
+            if train_method in ['ICM', 'RND']:
                 intrinsic_reward = agent.compute_intrinsic_reward(
                     states, next_states, actions)
                 rewards += intrinsic_reward
