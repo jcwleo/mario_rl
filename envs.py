@@ -184,7 +184,7 @@ class MarioEnvironment(Process):
                 r = 0.
 
             if train_method == 'RND':
-                reward = 0.
+                r = 0.
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
