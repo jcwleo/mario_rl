@@ -15,7 +15,14 @@ def main():
     print({section: dict(config[section]) for section in config.sections()})
     train_method = default_config['TrainMethod']
     env_id = default_config['EnvID']
-    env = gym.make(env_id)
+    env_type = default_config['EnvType']
+
+    if env_type == 'mario':
+        env = BinarySpaceToDiscreteSpaceEnv(gym_super_mario_bros.make(env_id), COMPLEX_MOVEMENT)
+    elif env_type == 'atari':
+        env = gym.make(env_id)
+    else:
+        raise NotImplementedError
     input_size = env.observation_space.shape  # 4
     output_size = env.action_space.n  # 2
 
@@ -50,6 +57,7 @@ def main():
     stable_eps = float(default_config['StableEps'])
     entropy_coef = float(default_config['Entropy'])
     gamma = float(default_config['Gamma'])
+    int_gamma = None
     clip_grad_norm = float(default_config['ClipGradNorm'])
 
     beta = float(icm_config['beta'])
@@ -63,10 +71,12 @@ def main():
         agent = PPOAgent
     elif train_method == 'ICM':
         agent = ICMAgent
+        gamma = float(icm_config['Gamma'])
+        int_gamma = float(icm_config['IntGamma'])
     elif train_method == 'RND':
         agent = RNDAgent
         gamma = float(rnd_config['Gamma'])
-        rnd_gamma = float(rnd_config['RNDGamma'])
+        int_gamma = float(rnd_config['IntGamma'])
     else:
         agent = A2CAgent
 
@@ -96,7 +106,6 @@ def main():
         use_cuda=use_cuda,
         use_gae=use_gae,
         use_noisy_net=use_noisy_net,
-        rnd_gamma=rnd_gamma,
         train_method=train_method
     )
 
@@ -134,13 +143,14 @@ def main():
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
 
-            next_states, rewards, dones, real_dones = [], [], [], []
+            next_states, rewards, dones, real_dones, log_rewards = [], [], [], [], []
             for parent_conn in parent_conns:
-                s, r, d, rd = parent_conn.recv()
+                s, r, d, rd, lr = parent_conn.recv()
                 next_states.append(s)
                 rewards.append(r)
                 dones.append(d)
                 real_dones.append(rd)
+                log_rewards.append(lr)
 
             next_states = np.stack(next_states)
             rewards = np.hstack(rewards)
@@ -166,25 +176,20 @@ def main():
 
             states = next_states[:, :, :, :]
 
-            sample_rall += rewards[sample_env_idx]
+            sample_rall += log_rewards[sample_env_idx]
 
             sample_step += 1
             if real_dones[sample_env_idx]:
                 sample_episode += 1
                 writer.add_scalar('data/reward', sample_rall, sample_episode)
                 writer.add_scalar('data/step', sample_step, sample_episode)
-                if train_method in ['ICM', 'RND']:
-                    writer.add_scalar('data/int_reward', sample_i_rall, sample_episode)
                 sample_rall = 0
                 sample_step = 0
                 sample_i_rall = 0
 
-        total_state = np.stack(total_state).transpose(
-            [1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_next_state = np.stack(total_next_state).transpose(
-            [1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
         total_reward = np.stack(total_reward).transpose().reshape([-1])
-        total_int_reward = np.stack(total_int_reward).transpose().reshape([-1])
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose().reshape([-1])
 
@@ -193,13 +198,17 @@ def main():
 
         if train_method in ['ICM', 'RND']:
             # running mean int reward
+            total_int_reward = np.stack(total_int_reward).transpose().reshape([-1])
             total_reward_per_env = np.array([discounted_reward.update(reward_per_step) for reward_per_step in
                                              total_int_reward.reshape([num_worker, -1]).T])
             mean, std, count = np.mean(total_reward_per_env), np.std(total_reward_per_env), len(total_reward_per_env)
             reward_rms.update_from_moments(mean, std ** 2, count)
 
             # devided reward by running std
-            total_reward /= np.sqrt(reward_rms.var)
+            total_int_reward /= np.sqrt(reward_rms.var)
+
+        if train_method in ['ICM', 'RND']:
+            writer.add_scalar('data/int_reward', sum(total_int_reward) / num_worker, sample_episode)
 
         policy = policy.detach()
         m = F.softmax(policy, dim=-1)
@@ -207,6 +216,7 @@ def main():
         writer.add_scalar('data/max_prob', np.mean(recent_prob), sample_episode)
 
         total_target = []
+        total_int_target = []
         total_adv = []
         total_int_adv = []
         # -----------------------------------------------
@@ -215,24 +225,34 @@ def main():
             target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
                                           total_done[idx * num_step:(idx + 1) * num_step],
                                           value[idx * num_step:(idx + 1) * num_step],
-                                          next_value[idx * num_step:(idx + 1) * num_step])
+                                          next_value[idx * num_step:(idx + 1) * num_step],
+                                          gamma,
+                                          num_step)
 
             total_target.append(target)
             total_adv.append(adv)
 
-        # intrinsic reward calculate
-        for idx in range(num_worker):
-            target, adv = make_train_data(total_int_reward[idx * num_step:(idx + 1) * num_step],
-                                          total_done[idx * num_step:(idx + 1) * num_step],
-                                          value[idx * num_step:(idx + 1) * num_step],
-                                          next_value[idx * num_step:(idx + 1) * num_step])
+        if train_method in ['ICM', 'RND']:
+            # intrinsic reward calculate
+            # No Episodic
+            for idx in range(num_worker):
+                target, adv = make_train_data(total_int_reward[idx * num_step:(idx + 1) * num_step],
+                                              np.zeros([num_step]),
+                                              value[idx * num_step:(idx + 1) * num_step],
+                                              next_value[idx * num_step:(idx + 1) * num_step],
+                                              int_gamma,
+                                              num_step)
 
-            total_target.append(target)
-            total_int_adv.append(adv)
+                total_int_target.append(target)
+                total_int_adv.append(adv)
         # -----------------------------------------------
 
         if use_standardization:
             total_adv = (total_adv - np.mean(total_adv)) / (np.std(total_adv) + stable_eps)
+
+        if train_method in ['ICM', 'RND']:
+            total_target += total_int_target
+            total_adv += total_int_adv
 
         agent.train_model(total_state, total_next_state, np.hstack(total_target), total_action, np.hstack(total_adv))
 

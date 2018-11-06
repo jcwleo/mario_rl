@@ -28,7 +28,6 @@ class A2CAgent(object):
             beta=0.2,
             icm_scale=10.0,
             eta=0.01,
-            rnd_gamma=0.99,
             use_gae=True,
             use_cuda=False,
             use_noisy_net=False,
@@ -49,7 +48,6 @@ class A2CAgent(object):
         self.icm, self.rnd = None, None
         self.beta = beta
         self.eta = eta
-        self.rnd_gamma = rnd_gamma
         self.icm_scale = icm_scale
         self.device = torch.device('cuda' if use_cuda else 'cpu')
 
@@ -144,7 +142,7 @@ class PPOAgent(A2CAgent):
                 policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
                 policy_old_list.extend(policy_old)
 
-            policy_old_list = torch.Tensor(policy_old_list)
+            policy_old_list = torch.stack(policy_old_list)
 
             m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)
@@ -215,7 +213,7 @@ class ICMAgent(PPOAgent):
                 policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
                 policy_old_list.extend(policy_old)
 
-            policy_old_list = torch.Tensor(policy_old_list)
+            policy_old_list = torch.stack(policy_old_list)
 
             m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)
@@ -301,7 +299,7 @@ class RNDAgent(PPOAgent):
                 policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
                 policy_old_list.extend(policy_old)
 
-            policy_old_list = torch.Tensor(policy_old_list)
+            policy_old_list = torch.stack(policy_old_list)
 
             m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)

@@ -1,17 +1,17 @@
 from config import *
 import numpy as np
 
-if default_config['TrainMethod'] in ['PPO', 'ICM']:
-    num_step = int(ppo_config['NumStep'])
-else:
-    num_step = int(default_config['NumStep'])
+# if default_config['TrainMethod'] in ['PPO', 'ICM', 'RND']:
+#     num_step = int(ppo_config['NumStep'])
+# else:
+#     num_step = int(default_config['NumStep'])
 
 use_gae = default_config.getboolean('UseGAE')
-gamma = float(default_config['Gamma'])
 lam = float(default_config['Lambda'])
+train_method = default_config['TrainMethod']
 
 
-def make_train_data(reward, done, value, next_value):
+def make_train_data(reward, done, value, next_value, gamma, num_step):
     discounted_return = np.empty([num_step])
 
     # Discounted Return
