@@ -251,8 +251,12 @@ def main():
             total_adv = (total_adv - np.mean(total_adv)) / (np.std(total_adv) + stable_eps)
 
         if train_method in ['ICM', 'RND']:
-            total_target += total_int_target
-            total_adv += total_int_adv
+            if train_method == 'ICM':
+                total_target = total_int_adv
+                total_adv = total_int_adv
+            else:
+                total_target += total_int_target
+                total_adv += total_int_adv
 
         agent.train_model(total_state, total_next_state, np.hstack(total_target), total_action, np.hstack(total_adv))
 
