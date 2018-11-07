@@ -142,7 +142,7 @@ class PPOAgent(A2CAgent):
                 policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
                 policy_old_list.extend(policy_old)
 
-            policy_old_list = torch.Tensor(policy_old_list)
+            policy_old_list = torch.stack(policy_old_list)
 
             m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)
@@ -213,7 +213,7 @@ class ICMAgent(PPOAgent):
                 policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
                 policy_old_list.extend(policy_old)
 
-            policy_old_list = torch.Tensor(policy_old_list)
+            policy_old_list = torch.stack(policy_old_list)
 
             m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)
@@ -299,7 +299,7 @@ class RNDAgent(PPOAgent):
                 policy_old, _ = self.model(s_batch[self.batch_size * i: self.batch_size * (i + 1)])
                 policy_old_list.extend(policy_old)
 
-            policy_old_list = torch.Tensor(policy_old_list)
+            policy_old_list = torch.stack(policy_old_list)
 
             m_old = Categorical(F.softmax(policy_old_list, dim=-1))
             log_prob_old = m_old.log_prob(y_batch)

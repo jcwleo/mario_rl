@@ -75,7 +75,7 @@ class AtariEnvironment(Environment):
                 action += 1
 
             _, reward, done, info = self.env.step(action)
-
+            log_reward = reward
             if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
                 force_done = True
                 self.lives = info['ale.lives']
@@ -92,6 +92,9 @@ class AtariEnvironment(Environment):
             if train_method == 'ICM':
                 reward = 0.
 
+            if train_method == 'RND':
+                reward = 0.
+
             if done:
                 self.recent_rlist.append(self.rall)
                 print("[Episode {}({})] Step: {}  Reward: {}  Recent Reward: {}".format(
@@ -100,7 +103,7 @@ class AtariEnvironment(Environment):
                 self.history = self.reset()
 
             self.child_conn.send(
-                [self.history[:, :, :], reward, force_done, done])
+                [self.history[:, :, :], reward, force_done, done, log_reward])
 
     def reset(self):
         self.steps = 0
@@ -136,7 +139,7 @@ class MarioEnvironment(Process):
         super(MarioEnvironment, self).__init__()
         self.daemon = True
         self.env = BinarySpaceToDiscreteSpaceEnv(
-            gym_super_mario_bros.make(env_id), movement)
+            gym_super_mario_bros.make(env_id), COMPLEX_MOVEMENT)
 
         self.is_render = is_render
         self.env_idx = env_idx
@@ -180,6 +183,9 @@ class MarioEnvironment(Process):
             if train_method == 'ICM':
                 r = 0.
 
+            if train_method == 'RND':
+                r = 0.
+
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
 
@@ -201,7 +207,7 @@ class MarioEnvironment(Process):
 
                 self.history = self.reset()
             else:
-                if self.icm:
+                if default_config['TrainMethod'] == 'ICM':
                     self.child_conn.send([self.history[:, :, :], r, False, done, log_reward])
                 else:
                     self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
