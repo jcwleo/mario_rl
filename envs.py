@@ -14,6 +14,7 @@ from model import *
 from config import *
 
 train_method = default_config['TrainMethod']
+max_step_per_episode = int(default_config['MaxStepPerEpisode'])
 
 
 class Environment(Process):
@@ -75,6 +76,10 @@ class AtariEnvironment(Environment):
                 action += 1
 
             _, reward, done, info = self.env.step(action)
+
+            if max_step_per_episode < self.steps:
+                done = True
+
             log_reward = reward
             if self.lives > info['ale.lives'] and info['ale.lives'] > 0:
                 force_done = True

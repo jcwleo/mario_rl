@@ -242,19 +242,20 @@ class CuriosityModel(nn.Module):
                 stride=1),
             nn.LeakyReLU(),
             Flatten(),
+            nn.Linear(feature_output, 512)
         )
 
         self.inverse_net = nn.Sequential(
-            nn.Linear(feature_output * 2, 512),
+            nn.Linear(512 * 2, 512),
             nn.LeakyReLU(),
             nn.Linear(512, output_size)
         )
 
         self.forward_net = nn.Sequential(
-            nn.Linear(output_size + feature_output, 512),
-            nn.LeakyReLU(),
-            nn.Linear(512, feature_output)
+            nn.Linear(output_size + 512, 512),
         )
+
+
         for p in self.modules():
             if isinstance(p, nn.Conv2d):
                 init.kaiming_uniform_(p.weight)
