@@ -62,8 +62,8 @@ class NoisyLinear(nn.Module):
 
     def __repr__(self):
         return self.__class__.__name__ + '(' \
-               + 'in_features=' + str(self.in_features) \
-               + ', out_features=' + str(self.out_features) + ')'
+            + 'in_features=' + str(self.in_features) \
+            + ', out_features=' + str(self.out_features) + ')'
 
 
 class Flatten(nn.Module):
@@ -254,7 +254,6 @@ class CuriosityModel(nn.Module):
         self.forward_net = nn.Sequential(
             nn.Linear(output_size + 512, 512),
         )
-
 
         for p in self.modules():
             if isinstance(p, nn.Conv2d):

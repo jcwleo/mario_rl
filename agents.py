@@ -325,13 +325,13 @@ class RNDAgent(PPOAgent):
 
                 surr1 = ratio * adv_batch[sample_idx]
                 surr2 = torch.clamp(
-                ratio,
-                1.0 - self.ppo_eps,
-                1.0 + self.ppo_eps) *adv_batch[sample_idx]
+                    ratio,
+                    1.0 - self.ppo_eps,
+                    1.0 + self.ppo_eps) * adv_batch[sample_idx]
 
                 actor_loss = -torch.min(surr1, surr2).mean()
                 critic_loss = F.mse_loss(
-                value.sum(1), target_batch[sample_idx])
+                    value.sum(1), target_batch[sample_idx])
                 entropy = m.entropy().mean()
 
                 self.optimizer.zero_grad()
