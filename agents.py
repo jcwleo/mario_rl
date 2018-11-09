@@ -228,7 +228,7 @@ class ICMAgent(PPOAgent):
                 # for Curiosity-driven
                 action_onehot = torch.FloatTensor(len(s_batch[sample_idx]), self.output_size).to(self.device)
                 action_onehot.zero_()
-                action_onehot.scatter_(1, y_batch.view(len(y_batch[sample_idx]), -1), 1)
+                action_onehot.scatter_(1, y_batch[sample_idx], 1)
 
                 real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
                     [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
