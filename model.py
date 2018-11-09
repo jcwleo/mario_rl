@@ -255,8 +255,6 @@ class CuriosityModel(nn.Module):
             nn.Linear(output_size + 512, 512),
             nn.LeakyReLU(),
             nn.Linear(512, 512),
-            nn.LeakyReLU(),
-            nn.Linear(512, 512),
         )
 
         for p in self.modules():
