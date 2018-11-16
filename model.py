@@ -240,7 +240,6 @@ class CuriosityModel(nn.Module):
                 out_channels=64,
                 kernel_size=3,
                 stride=1),
-            nn.LeakyReLU(),
             Flatten(),
             nn.Linear(feature_output, 512)
         )
@@ -251,10 +250,19 @@ class CuriosityModel(nn.Module):
             nn.Linear(512, output_size)
         )
 
-        self.forward_net = nn.Sequential(
+        self.residual = [nn.Sequential(
             nn.Linear(output_size + 512, 512),
             nn.LeakyReLU(),
             nn.Linear(512, 512),
+        ).cuda()] * 8
+        
+
+        self.forward_net_1 = nn.Sequential(
+            nn.Linear(output_size + 512, 512),
+            nn.LeakyReLU()
+        )
+        self.forward_net_2 = nn.Sequential(
+            nn.Linear(output_size + 512, 512),
         )
 
         for p in self.modules():
@@ -276,10 +284,15 @@ class CuriosityModel(nn.Module):
         # ---------------------
 
         # get pred next state
-        pred_next_state_feature = torch.cat((encode_state, action), 1)
-        pred_next_state_feature = self.forward_net(pred_next_state_feature)
+        pred_next_state_feature_orig = torch.cat((encode_state, action), 1)
+        pred_next_state_feature_orig = self.forward_net_1(pred_next_state_feature_orig)
+        for i in range(4):
+            pred_next_state_feature = self.residual[i*2](torch.cat((pred_next_state_feature_orig, action), 1))
+            pred_next_state_feature_orig = self.residual[i*2+1](torch.cat((pred_next_state_feature, action), 1)) + pred_next_state_feature_orig
 
-        real_next_state_feature = self.feature(next_state)
+        pred_next_state_feature=self.forward_net_2(torch.cat((pred_next_state_feature_orig, action),1))
+
+        real_next_state_feature=self.feature(next_state)
         return real_next_state_feature, pred_next_state_feature, pred_action
 
 
@@ -287,11 +300,11 @@ class RNDModel(nn.Module):
     def __init__(self, input_size, output_size):
         super(RNDModel, self).__init__()
 
-        self.input_size = input_size
-        self.output_size = output_size
+        self.input_size=input_size
+        self.output_size=output_size
 
-        feature_output = 7 * 7 * 64
-        self.predictor = nn.Sequential(
+        feature_output=7 * 7 * 64
+        self.predictor=nn.Sequential(
             nn.Conv2d(
                 in_channels=4,
                 out_channels=32,
@@ -309,12 +322,11 @@ class RNDModel(nn.Module):
                 out_channels=64,
                 kernel_size=3,
                 stride=1),
-            nn.LeakyReLU(),
             Flatten(),
             nn.Linear(feature_output, 512)
         )
 
-        self.target = nn.Sequential(
+        self.target=nn.Sequential(
             nn.Conv2d(
                 in_channels=4,
                 out_channels=32,
@@ -332,16 +344,15 @@ class RNDModel(nn.Module):
                 out_channels=64,
                 kernel_size=3,
                 stride=1),
-            nn.LeakyReLU(),
             Flatten(),
             nn.Linear(feature_output, 512)
         )
 
         for param in self.target.parameters():
-            param.requires_grad = False
+            param.requires_grad=False
 
     def forward(self, next_state):
-        target_feature = self.target(next_state)
-        predict_feature = self.predictor(next_state)
+        target_feature=self.target(next_state)
+        predict_feature=self.predictor(next_state)
 
-        return predict_feature, target_feature
+        return predict_feature, target_feature.detach()

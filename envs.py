@@ -190,11 +190,21 @@ class MarioEnvironment(Process):
 
             if train_method == 'RND':
                 r = 0.
+                if self.max_pos < info['x_pos']:
+                    self.max_pos = info['x_pos']
+                    if self.max_pos % 100 == 0:
+                        r = 1.
+                if info['flag_get'] or self.stage < info['stage']:
+                    r = 5.
+
+            self.stage = info['stage']
 
             self.history[:3, :, :] = self.history[1:, :, :]
             self.history[3, :, :] = self.pre_proc(obs)
 
             self.steps += 1
+            if force_done:
+                self.max_pos = 0
 
             if done:
                 self.recent_rlist.append(self.rall)
@@ -211,11 +221,11 @@ class MarioEnvironment(Process):
                         self.max_pos))
 
                 self.history = self.reset()
+            
+            if default_config['TrainMethod'] == 'ICM':
+                self.child_conn.send([self.history[:, :, :], r, False, done, log_reward])
             else:
-                if default_config['TrainMethod'] == 'ICM':
-                    self.child_conn.send([self.history[:, :, :], r, False, done, log_reward])
-                else:
-                    self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
+                self.child_conn.send([self.history[:, :, :], r, force_done, done, log_reward])
 
     def reset(self):
         self.steps = 0

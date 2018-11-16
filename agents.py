@@ -226,15 +226,14 @@ class ICMAgent(PPOAgent):
 
                 # --------------------------------------------------------------------------------
                 # for Curiosity-driven
-                action_onehot = torch.FloatTensor(len(s_batch[sample_idx]), self.output_size).to(self.device)
+                action_onehot = torch.FloatTensor(self.batch_size, self.output_size).to(self.device)
                 action_onehot.zero_()
-                action_onehot.scatter_(1, y_batch[sample_idx].reshape([-1, 1]), 1)
-
+                action_onehot.scatter_(1, y_batch[sample_idx].view(-1, 1), 1)
                 real_next_state_feature, pred_next_state_feature, pred_action = self.icm(
                     [s_batch[sample_idx], next_s_batch[sample_idx], action_onehot])
 
                 inverse_loss = ce(
-                    pred_action, y_batch[sample_idx].detach())
+                    pred_action, y_batch[sample_idx])
 
                 forward_loss = forward_mse(
                     pred_next_state_feature, real_next_state_feature.detach())
@@ -258,13 +257,12 @@ class ICMAgent(PPOAgent):
                 entropy = m.entropy().mean()
 
                 self.optimizer.zero_grad()
-                loss = (actor_loss + 0.5 * critic_loss) + self.icm_scale * \
-                       ((1 - self.beta) * inverse_loss + self.beta * forward_loss)
+                loss = (actor_loss + 0.5 * critic_loss - 0.001 * entropy) + forward_loss + inverse_loss
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    list(self.model.parameters()) +
-                    list(self.icm.parameters()),
-                    self.clip_grad_norm)
+                #torch.nn.utils.clip_grad_norm_(
+                #    list(self.model.parameters()) +
+                #    list(self.icm.parameters()),
+                #    self.clip_grad_norm)
                 self.optimizer.step()
 
 
