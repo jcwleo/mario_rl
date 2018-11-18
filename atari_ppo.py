@@ -210,33 +210,32 @@ class ActorAgent(object):
 
 
 def make_train_data(reward, done, value, next_value):
-    discounted_return = np.empty([num_step])
+    discounted_return = np.empty([num_worker,num_step])
 
     # Discounted Return
     if use_gae:
-        gae = 0
+        gae = np.zeros_like([num_worker,])
         for t in range(num_step - 1, -1, -1):
-            delta = reward[t] + gamma * \
-                next_value[t] * (1 - done[t]) - value[t]
-            gae = delta + gamma * lam * (1 - done[t]) * gae
 
-            discounted_return[t] = gae + value[t]
+            delta = reward[:,t] + gamma * next_value[:,t] * (1 - done[:,t]) - value[:,t]
+            gae = delta + gamma * lam * (1 - done[:,t]) * gae
+
+
+            discounted_return[:,t] = gae + value[:,t]
 
         # For Actor
         adv = discounted_return - value
 
     else:
         for t in range(num_step - 1, -1, -1):
-            running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
-            discounted_return[t] = running_add
+            running_add = reward[:,t] + gamma * next_value[:,t] * (1 - done[:,t])
+            discounted_return[:,t] = running_add
 
         # For Actor
         adv = discounted_return - value
 
-    if use_standardization:
-        adv = (adv - adv.mean()) / (adv.std() + stable_eps)
+    return discounted_return.reshape([-1]), adv.reshape([-1])
 
-    return discounted_return, adv
 
 
 if __name__ == '__main__':
@@ -263,7 +262,7 @@ if __name__ == '__main__':
     model_path = 'models/{}.model'.format(env_id)
 
     lam = 0.95
-    num_worker = 16
+    num_worker = 4
 
     num_step = 128
     ppo_eps = 0.1
@@ -353,13 +352,12 @@ if __name__ == '__main__':
                 sample_rall = 0
                 sample_step = 0
 
-        total_state = np.stack(total_state).transpose(
-            [1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_next_state = np.stack(total_next_state).transpose(
-            [1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_reward = np.stack(total_reward).transpose().reshape([-1])
+        total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
+        total_reward = np.stack(total_reward).transpose()
+
         total_action = np.stack(total_action).transpose().reshape([-1])
-        total_done = np.stack(total_done).transpose().reshape([-1])
+        total_done = np.stack(total_done).transpose()
 
         value, next_value, policy = agent.forward_transition(
             total_state, total_next_state)
@@ -374,22 +372,17 @@ if __name__ == '__main__':
 
         total_target = []
         total_adv = []
-        for idx in range(num_worker):
-            target, adv = make_train_data(total_reward[idx * num_step:(idx + 1) * num_step],
-                                          total_done[idx *
-                                                     num_step:(idx + 1) * num_step],
-                                          value[idx *
-                                                num_step:(idx + 1) * num_step],
-                                          next_value[idx * num_step:(idx + 1) * num_step])
-            # print(target.shape)
-            total_target.append(target)
-            total_adv.append(adv)
 
-        agent.train_model(
-            total_state,
-            np.hstack(total_target),
-            total_action,
-            np.hstack(total_adv))
+        value = value.reshape([num_worker, -1])
+        next_value = next_value.reshape([num_worker, -1])
+
+        # make target and advantage
+        target, adv = make_train_data(total_reward,
+                                      total_done,
+                                      value,
+                                      next_value)
+
+        agent.train_model(total_state, target, total_action, adv)
 
         # adjust learning rate
         if lr_schedule:
