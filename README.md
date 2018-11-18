@@ -7,6 +7,8 @@
 - [x] Proximal Policy Optimization Algorithms [[4]](#references)
 - [x] Curiosity-driven Exploration by Self-supervised Prediction [[5]](#references) (WIP)
 
+- [Here is my 'Random Network Distillation' pytorch model](https://github.com/jcwleo/random-network-distillation-pytorch)
+
  
 ## 1. Setup
 ####  Requirements
