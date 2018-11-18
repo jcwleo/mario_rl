@@ -178,24 +178,24 @@ class CnnActorCriticNetwork(nn.Module):
                 out_channels=32,
                 kernel_size=8,
                 stride=4),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Conv2d(
                 in_channels=32,
                 out_channels=64,
                 kernel_size=4,
                 stride=2),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Conv2d(
                 in_channels=64,
                 out_channels=64,
                 kernel_size=3,
                 stride=1),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             Flatten(),
             linear(
                 7 * 7 * 64,
                 512),
-            nn.LeakyReLU(),
+            nn.ReLU(),
         )
         self.actor = linear(512, output_size)
         self.critic = linear(512, 1)

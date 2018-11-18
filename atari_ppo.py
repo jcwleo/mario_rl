@@ -146,7 +146,7 @@ class ActorAgent(object):
 
         action = self.random_choice_prob_index(policy)
 
-        return action
+        return action, value.data.cpu().numpy().squeeze()
 
     @staticmethod
     def random_choice_prob_index(p, axis=1):
@@ -209,33 +209,30 @@ class ActorAgent(object):
                 self.optimizer.step()
 
 
-def make_train_data(reward, done, value, next_value):
-    discounted_return = np.empty([num_worker,num_step])
+def make_train_data(reward, done, value):
+    discounted_return = np.empty([num_worker, num_step])
 
     # Discounted Return
     if use_gae:
-        gae = np.zeros_like([num_worker,])
+        gae = np.zeros_like([num_worker, ])
         for t in range(num_step - 1, -1, -1):
+            delta = reward[:, t] + gamma * value[:, t + 1] * (1 - done[:, t]) - value[:, t]
+            gae = delta + gamma * lam * (1 - done[:, t]) * gae
 
-            delta = reward[:,t] + gamma * next_value[:,t] * (1 - done[:,t]) - value[:,t]
-            gae = delta + gamma * lam * (1 - done[:,t]) * gae
-
-
-            discounted_return[:,t] = gae + value[:,t]
+            discounted_return[:, t] = gae + value[:, t]
 
         # For Actor
-        adv = discounted_return - value
+        adv = discounted_return - value[:,:-1]
 
     else:
         for t in range(num_step - 1, -1, -1):
-            running_add = reward[:,t] + gamma * next_value[:,t] * (1 - done[:,t])
-            discounted_return[:,t] = running_add
+            running_add = reward[:, t] + gamma * value[:, t + 1] * (1 - done[:, t])
+            discounted_return[:, t] = running_add
 
         # For Actor
         adv = discounted_return - value
 
     return discounted_return.reshape([-1]), adv.reshape([-1])
-
 
 
 if __name__ == '__main__':
@@ -313,11 +310,11 @@ if __name__ == '__main__':
     recent_prob = deque(maxlen=10)
 
     while True:
-        total_state, total_reward, total_done, total_next_state, total_action = [], [], [], [], []
+        total_state, total_reward, total_done, total_next_state, total_action, total_values = [], [], [], [], [], []
         global_step += (num_worker * num_step)
 
         for _ in range(num_step):
-            actions = agent.get_action(states)
+            actions, values = agent.get_action(states)
 
             for parent_conn, action in zip(parent_conns, actions):
                 parent_conn.send(action)
@@ -336,10 +333,10 @@ if __name__ == '__main__':
             real_dones = np.hstack(real_dones)
 
             total_state.append(states)
-            total_next_state.append(next_states)
             total_reward.append(rewards)
             total_done.append(dones)
             total_action.append(actions)
+            total_values.append(values)
 
             states = next_states[:, :, :, :]
 
@@ -352,42 +349,38 @@ if __name__ == '__main__':
                 sample_rall = 0
                 sample_step = 0
 
+        _, next_values = agent.get_action(states)
+        total_values.append(next_values)
+
         total_state = np.stack(total_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
-        total_next_state = np.stack(total_next_state).transpose([1, 0, 2, 3, 4]).reshape([-1, 4, 84, 84])
         total_reward = np.stack(total_reward).transpose()
 
         total_action = np.stack(total_action).transpose().reshape([-1])
         total_done = np.stack(total_done).transpose()
+        total_values = np.stack(total_values).transpose()
 
-        value, next_value, policy = agent.forward_transition(
-            total_state, total_next_state)
-
-        policy = policy.detach()
-        m = F.softmax(policy, dim=-1)
-        recent_prob.append(m.max(1)[0].mean().cpu().numpy())
-        writer.add_scalar(
-            'data/max_prob',
-            np.mean(recent_prob),
-            sample_episode)
+        # policy = policy.detach()
+        # m = F.softmax(policy, dim=-1)
+        # recent_prob.append(m.max(1)[0].mean().cpu().numpy())
+        # writer.add_scalar(
+        #     'data/max_prob',
+        #     np.mean(recent_prob),
+        #     sample_episode)
 
         total_target = []
         total_adv = []
 
-        value = value.reshape([num_worker, -1])
-        next_value = next_value.reshape([num_worker, -1])
-
         # make target and advantage
         target, adv = make_train_data(total_reward,
                                       total_done,
-                                      value,
-                                      next_value)
+                                      total_values)
 
         agent.train_model(total_state, target, total_action, adv)
 
         # adjust learning rate
         if lr_schedule:
             new_learing_rate = learning_rate - \
-                (global_step / max_step) * learning_rate
+                               (global_step / max_step) * learning_rate
             for param_group in agent.optimizer.param_groups:
                 param_group['lr'] = new_learing_rate
                 writer.add_scalar('data/lr', new_learing_rate, sample_episode)
