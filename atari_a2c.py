@@ -217,8 +217,9 @@ def make_train_data(reward, done, value, next_value):
         adv = discounted_return - value
 
     else:
+        running_add = next_value[-1]
         for t in range(num_step - 1, -1, -1):
-            running_add = reward[t] + gamma * next_value[t] * (1 - done[t])
+            running_add = reward[t] + gamma * running_add * (1 - done[t])
             discounted_return[t] = running_add
 
         # For Actor

@@ -166,9 +166,6 @@ def make_train_data(reward, done, value, next_value):
 
             discounted_return[t] = gae + value[t]
 
-        # For critic
-        target = reward + gamma * (1 - done) * next_value
-
         # For Actor
         adv = discounted_return - value
 
@@ -180,15 +177,12 @@ def make_train_data(reward, done, value, next_value):
             running_add = reward[t] + gamma * running_add
             discounted_return[t] = running_add
 
-        # For critic
-        target = r + gamma * (1 - done) * next_value
-
         # For Actor
         adv = discounted_return - value
 
     adv = (adv - adv.mean()) / (adv.std() + 1e-5)
 
-    return target, adv
+    return discounted_return, adv
 
 
 if __name__ == '__main__':
